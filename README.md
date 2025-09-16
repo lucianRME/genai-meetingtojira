@@ -11,6 +11,20 @@ This repository is a **Proof of Concept (POC)** that demonstrates how to use Gen
 
 ---
 
+
+## 🔐 API Key Setup
+
+This project requires an OpenAI API key.
+
+1. Go to [https://platform.openai.com/account/api-keys](https://platform.openai.com/account/api-keys)
+2. Click **Create new secret key** and copy it (`sk-...`)
+3. In the project root, create a file named `.env` with:
+
+```env
+OPENAI_API_KEY=sk-YOUR-OWN-KEY-HERE
+
+---
+
 ## ⚙️ Architecture
 
 ```mermaid
