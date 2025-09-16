@@ -1,0 +1,49 @@
+LinkedRequirement,ScenarioType,Gherkin
+REQ-001,positive,"Scenario: User receives an email with a one-time code for password reset
+Given a user requests a password reset
+When the request is processed
+Then the user receives an email with a one-time code"
+REQ-001,negative,"Scenario: User does not receive an email if the email address is invalid
+Given a user requests a password reset with an invalid email address
+When the request is processed
+Then the user does not receive an email with a one-time code"
+REQ-001,regression,"Scenario: One-time code expires after 10 minutes
+Given a user receives a one-time code
+When 10 minutes have passed
+Then the one-time code is expired and cannot be used for password reset"
+REQ-002,positive,"Scenario: Password reset with a valid OTP
+Given a user has a valid OTP
+When the user attempts to reset the password
+Then the system allows the password reset"
+REQ-002,negative,"Scenario: Password reset with an expired OTP
+Given a user has an expired OTP
+When the user attempts to reset the password
+Then the system denies the password reset"
+REQ-002,regression,"Scenario: Password reset with an invalid OTP
+Given a user has an invalid OTP
+When the user attempts to reset the password
+Then the system denies the password reset"
+REQ-003,positive,"Scenario: User can attempt password reset up to 3 times in one hour
+Given a user attempts to reset the password
+When the user has made fewer than 3 attempts in one hour
+Then the system allows the password reset attempt"
+REQ-003,negative,"Scenario: User is blocked after 3 password reset attempts in one hour
+Given a user has attempted to reset the password 3 times in one hour
+When the user attempts a fourth reset
+Then the system blocks the password reset attempt"
+REQ-003,regression,"Scenario: Attempt count resets after one hour
+Given a user has made 3 password reset attempts in one hour
+When one hour has passed
+Then the system resets the attempt count"
+REQ-004,positive,"Scenario: Audit event is logged for successful password reset
+Given a user successfully resets their password
+When the password reset is completed
+Then the system logs an audit event with user details and timestamp"
+REQ-004,negative,"Scenario: No audit event is logged for failed password reset
+Given a user fails to reset their password
+When the password reset attempt is denied
+Then the system does not log an audit event"
+REQ-004,regression,"Scenario: Audit event is accessible in system logs
+Given a password reset has been successfully completed
+When an administrator checks the system logs
+Then the audit event is present and accessible for verification"
