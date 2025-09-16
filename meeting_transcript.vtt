@@ -1,0 +1,37 @@
+WEBVTT
+
+00:00:01.000 --> 00:00:05.000
+Alice: Let's align on the password reset feature for the customer portal.
+
+00:00:06.000 --> 00:00:10.000
+Bob: Right now users can only reset via support tickets, which delays resolution.
+
+00:00:11.000 --> 00:00:16.000
+Carol: We want them to reset using an email one-time code, correct?
+
+00:00:17.000 --> 00:00:20.000
+Alice: Yes, and the code should expire in 10 minutes.
+
+00:00:21.000 --> 00:00:25.000
+Bob: Should we add two-factor authentication during reset, or only at login?
+
+00:00:26.000 --> 00:00:29.000
+Carol: For now, just at login. Reset can be OTP-only.
+
+00:00:30.000 --> 00:00:35.000
+Alice: We'll need acceptance criteria: successful OTP, expired OTP, and invalid OTP.
+
+00:00:36.000 --> 00:00:40.000
+Bob: Also handle rate limiting — max 3 attempts per hour per user.
+
+00:00:41.000 --> 00:00:46.000
+Carol: QA will need positive and negative test cases around OTP verification.
+
+00:00:47.000 --> 00:00:51.000
+Alice: And regression tests to ensure existing login flow still works.
+
+00:00:52.000 --> 00:00:56.000
+Bob: We'll also need to send an audit event when password is successfully reset.
+
+00:00:57.000 --> 00:01:00.000
+Carol: Good, that will help us verify in the logs.
