@@ -3,41 +3,41 @@
     {
       "id": "REQ-001",
       "title": "Email One-Time Code for Password Reset",
-      "description": "Implement a feature allowing users to reset their password using a one-time code sent via email, expiring in 10 minutes.",
+      "description": "Implement a feature that allows users to reset their password using a one-time code sent via email.",
       "acceptance_criteria": [
-        "User receives an email with a one-time code upon requesting a password reset.",
-        "The one-time code expires 10 minutes after being sent.",
-        "User can reset the password using a valid, unexpired one-time code."
+        "User receives a one-time code via email upon reset request.",
+        "The one-time code expires in 10 minutes.",
+        "User can reset password using the valid one-time code."
       ]
     },
     {
       "id": "REQ-002",
-      "title": "OTP Verification Handling",
-      "description": "Ensure the system correctly handles successful, expired, and invalid OTP scenarios during password reset.",
+      "title": "OTP Verification Scenarios",
+      "description": "Develop test cases for verifying the OTP functionality during password reset.",
       "acceptance_criteria": [
-        "System allows password reset with a valid OTP within the expiration time.",
-        "System denies password reset with an expired OTP.",
-        "System denies password reset with an invalid OTP."
+        "Successful OTP verification allows password reset.",
+        "Expired OTP does not allow password reset.",
+        "Invalid OTP does not allow password reset."
       ]
     },
     {
       "id": "REQ-003",
-      "title": "Rate Limiting on Password Reset Attempts",
-      "description": "Implement rate limiting to restrict users to a maximum of 3 password reset attempts per hour.",
+      "title": "Rate Limiting for Password Reset Attempts",
+      "description": "Implement rate limiting to restrict the number of password reset attempts per user.",
       "acceptance_criteria": [
-        "System tracks the number of password reset attempts per user.",
-        "System blocks further password reset attempts after 3 attempts in one hour.",
-        "System resets the attempt count after one hour."
+        "User can attempt password reset a maximum of 3 times per hour.",
+        "Further attempts are blocked after 3 failed attempts within an hour.",
+        "Rate limit resets after one hour from the first attempt."
       ]
     },
     {
       "id": "REQ-004",
       "title": "Audit Event for Successful Password Reset",
-      "description": "Log an audit event whenever a password is successfully reset to ensure traceability.",
+      "description": "Log an audit event whenever a password is successfully reset.",
       "acceptance_criteria": [
-        "System logs an audit event with user details upon successful password reset.",
-        "Audit event includes timestamp of the password reset.",
-        "Audit event is accessible in system logs for verification."
+        "Audit event is generated upon successful password reset.",
+        "Audit event includes timestamp and user ID.",
+        "Audit logs are accessible for verification purposes."
       ]
     }
   ],
@@ -45,62 +45,62 @@
     {
       "requirement_id": "REQ-001",
       "scenario_type": "positive",
-      "gherkin": "Scenario: User receives an email with a one-time code for password reset\nGiven a user requests a password reset\nWhen the request is processed\nThen the user receives an email with a one-time code"
+      "gherkin": "Scenario: User receives a one-time code via email upon reset request\nGiven a registered user requests a password reset\nWhen the user submits the password reset request\nThen the user receives a one-time code via email"
     },
     {
       "requirement_id": "REQ-001",
       "scenario_type": "negative",
-      "gherkin": "Scenario: User does not receive an email if the email address is invalid\nGiven a user requests a password reset with an invalid email address\nWhen the request is processed\nThen the user does not receive an email with a one-time code"
+      "gherkin": "Scenario: One-time code expires after 10 minutes\nGiven a user has received a one-time code via email\nAnd 10 minutes have passed since the code was sent\nWhen the user attempts to reset the password using the code\nThen the password reset is not allowed"
     },
     {
       "requirement_id": "REQ-001",
       "scenario_type": "regression",
-      "gherkin": "Scenario: One-time code expires after 10 minutes\nGiven a user receives a one-time code\nWhen 10 minutes have passed\nThen the one-time code is expired and cannot be used for password reset"
+      "gherkin": "Scenario: User can reset password using a valid one-time code\nGiven a user has received a valid one-time code via email\nWhen the user enters the one-time code to reset the password\nThen the password is successfully reset"
     },
     {
       "requirement_id": "REQ-002",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Password reset with a valid OTP\nGiven a user has a valid OTP\nWhen the user attempts to reset the password\nThen the system allows the password reset"
+      "gherkin": "Scenario: Successful OTP verification allows password reset\nGiven a user has received a valid OTP\nWhen the user enters the OTP correctly\nThen the user is allowed to reset the password"
     },
     {
       "requirement_id": "REQ-002",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Password reset with an expired OTP\nGiven a user has an expired OTP\nWhen the user attempts to reset the password\nThen the system denies the password reset"
+      "gherkin": "Scenario: Expired OTP does not allow password reset\nGiven a user has received an OTP\nAnd the OTP has expired\nWhen the user attempts to use the expired OTP\nThen the password reset is not allowed"
     },
     {
       "requirement_id": "REQ-002",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Password reset with an invalid OTP\nGiven a user has an invalid OTP\nWhen the user attempts to reset the password\nThen the system denies the password reset"
+      "gherkin": "Scenario: Invalid OTP does not allow password reset\nGiven a user has received an OTP\nWhen the user enters an invalid OTP\nThen the password reset is not allowed"
     },
     {
       "requirement_id": "REQ-003",
       "scenario_type": "positive",
-      "gherkin": "Scenario: User can attempt password reset up to 3 times in one hour\nGiven a user attempts to reset the password\nWhen the user has made fewer than 3 attempts in one hour\nThen the system allows the password reset attempt"
+      "gherkin": "Scenario: User can attempt password reset a maximum of 3 times per hour\nGiven a user attempts to reset their password\nWhen the user makes 3 password reset attempts within an hour\nThen the attempts are allowed"
     },
     {
       "requirement_id": "REQ-003",
       "scenario_type": "negative",
-      "gherkin": "Scenario: User is blocked after 3 password reset attempts in one hour\nGiven a user has attempted to reset the password 3 times in one hour\nWhen the user attempts a fourth reset\nThen the system blocks the password reset attempt"
+      "gherkin": "Scenario: Further attempts are blocked after 3 failed attempts within an hour\nGiven a user has made 3 failed password reset attempts within an hour\nWhen the user attempts a fourth password reset\nThen the attempt is blocked"
     },
     {
       "requirement_id": "REQ-003",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Attempt count resets after one hour\nGiven a user has made 3 password reset attempts in one hour\nWhen one hour has passed\nThen the system resets the attempt count"
+      "gherkin": "Scenario: Rate limit resets after one hour from the first attempt\nGiven a user has made 3 password reset attempts\nAnd one hour has passed since the first attempt\nWhen the user attempts another password reset\nThen the attempt is allowed"
     },
     {
       "requirement_id": "REQ-004",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Audit event is logged for successful password reset\nGiven a user successfully resets their password\nWhen the password reset is completed\nThen the system logs an audit event with user details and timestamp"
+      "gherkin": "Scenario: Audit event is generated upon successful password reset\nGiven a user successfully resets their password\nWhen the password reset is completed\nThen an audit event is generated"
     },
     {
       "requirement_id": "REQ-004",
       "scenario_type": "negative",
-      "gherkin": "Scenario: No audit event is logged for failed password reset\nGiven a user fails to reset their password\nWhen the password reset attempt is denied\nThen the system does not log an audit event"
+      "gherkin": "Scenario: Audit event includes timestamp and user ID\nGiven a user successfully resets their password\nWhen the audit event is generated\nThen the event includes a timestamp and user ID"
     },
     {
       "requirement_id": "REQ-004",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Audit event is accessible in system logs\nGiven a password reset has been successfully completed\nWhen an administrator checks the system logs\nThen the audit event is present and accessible for verification"
+      "gherkin": "Scenario: Audit logs are accessible for verification purposes\nGiven an audit event is generated for a password reset\nWhen an admin accesses the audit logs\nThen the logs are accessible and include the event"
     }
   ]
 }
