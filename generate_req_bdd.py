@@ -2,47 +2,79 @@ import os, json, re, sqlite3
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# --- config / env ---
-TRANSCRIPT_FILE = "meeting_transcript.vtt"
-MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
-TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
-
-# Small-talk filtering
-SMALLTALK_FILTER = os.getenv("SMALLTALK_FILTER", "1") == "1"
-SMALLTALK_LLM_CLASSIFIER = os.getenv("SMALLTALK_LLM_CLASSIFIER", "0") == "1"
-CLASSIFIER_MODEL = os.getenv("SMALLTALK_CLASSIFIER_MODEL", "gpt-4o-mini")
-
-# --- setup ---
+# --- setup env ---
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise SystemExit("Missing OPENAI_API_KEY. Put it in .env")
+
+# model config
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
+TEMPERATURE = float(os.getenv("OPENAI_TEMPERATURE", "0.2"))
+
+# small-talk filtering config
+SMALLTALK_FILTER = os.getenv("SMALLTALK_FILTER", "1") == "1"
+SMALLTALK_LLM_CLASSIFIER = os.getenv("SMALLTALK_LLM_CLASSIFIER", "0") == "1"
+CLASSIFIER_MODEL = os.getenv("SMALLTALK_CLASSIFIER_MODEL", "gpt-4o-mini")
+
+# files
+TRANSCRIPT_FILE = "meeting_transcript.vtt"
+
+# openai client
 client = OpenAI(api_key=api_key)
 
-# --- helpers ---
+# -------- helpers --------
 def read_vtt_lines(path: str):
     """Return transcript lines with timestamps removed."""
     text = open(path, "r", encoding="utf-8").read()
+    # Remove WEBVTT header
     text = re.sub(r"^WEBVTT\s*\n", "", text, flags=re.MULTILINE)
-    text = re.sub(r"^\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*$", "", text, flags=re.MULTILINE)
+    # Remove timecodes
+    text = re.sub(r"^\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*$", "", text, flags=re.MULTILINE)
+    # Remove cue numbers
     text = re.sub(r"^\s*\d+\s*$", "", text, flags=re.MULTILINE)
-    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    # Normalize and split
+    lines = [ln.strip() for ln in re.sub(r"\r\n|\r", "\n", text).split("\n") if ln.strip()]
     return lines
 
-SMALLTALK_KEYWORDS = ["good morning","weekend","coffee","weather","birthday","vacation","lunch","mute","share screen"]
-ACTION_HINTS = ["requirement","acceptance criteria","jira","test","api","bug","sprint","deploy","given","when","then"]
+SMALLTALK_KEYWORDS = [
+    # greetings / chit-chat
+    "good morning","good afternoon","good evening","hello everyone","hi everyone",
+    "how are you","how’s everyone","weekend","coffee","weather","lunch","breakfast","dinner",
+    "holiday","vacation","birthday","congrats","congratulations","nice to meet you",
+    # filler / meeting admin
+    "can you hear me","i'm on mute","you are on mute","let me share my screen",
+    "next slide","previous slide","quick check","small talk",
+    # casual
+    "the game last night","did you watch the game","netflix"
+]
+
+ACTION_HINTS = [
+    "acceptance criteria","jira","story","epic","priority","owner","deadline","timeline",
+    "bug","fix","release","sprint","backlog","mttr","sla","uat","qa","test","scenario",
+    "deploy","environment","api","endpoint","rate limit","error","logging","monitoring",
+    "security","authentication","authorization","mfa","otp","rollback","risk",
+    "given","when","then","gherkin","requirement","spec","specification","design"
+]
 
 def rule_based_is_smalltalk(line: str) -> bool:
+    """Cheap filter: flag as small talk if chit-chat keywords present AND no action hints."""
     l = line.lower()
     if any(kw in l for kw in SMALLTALK_KEYWORDS) and not any(h in l for h in ACTION_HINTS):
+        return True
+    # Very short, bare lines often noise
+    if len(l) < 8 and l.isalpha():
         return True
     return False
 
 def classify_line_llm(line: str) -> str:
+    """
+    Returns 'business' or 'small talk' using a lightweight model (only if enabled).
+    """
     resp = client.chat.completions.create(
         model=CLASSIFIER_MODEL,
         messages=[
-            {"role": "system", "content": "Classify transcript lines as 'business' or 'small talk'."},
+            {"role": "system", "content": "Classify meeting transcript lines. Reply exactly: business OR small talk."},
             {"role": "user", "content": line}
         ],
         temperature=0
@@ -69,6 +101,10 @@ def extract_json(s: str):
         s = re.sub(r"^```(?:json)?\s*|\s*```$", "", s, flags=re.IGNORECASE|re.DOTALL)
     return json.loads(s)
 
+def validate_gherkin(s: str) -> bool:
+    """Minimal Gherkin sanity check."""
+    return all(token in s for token in ["Scenario:", "Given", "When", "Then"])
+
 # -------- main --------
 # 1) Read transcript
 all_lines = read_vtt_lines(TRANSCRIPT_FILE)
@@ -76,11 +112,11 @@ if SMALLTALK_FILTER:
     filtered_lines, dropped_lines = filter_transcript_lines(all_lines)
 else:
     filtered_lines, dropped_lines = all_lines, []
-transcript_text = "\n".join(filtered_lines)
+transcript_text = "\n".join(filtered_lines).strip()
 
-# 2) Prompt for requirements
+# 2) Prompt for requirements (with metadata)
 req_prompt = f"""
-You are a business analyst. Extract 3–6 clear, testable business requirements from this transcript.
+You are a senior business analyst. Extract 3–6 clear, testable business requirements from this transcript.
 Each requirement must have:
 - id (REQ-001, REQ-002, ...)
 - title
@@ -89,7 +125,7 @@ Each requirement must have:
 - priority (High/Medium/Low, based on context)
 - epic (string, or null if not detectable)
 
-Transcript:
+Transcript (noise-filtered):
 {transcript_text}
 
 Return JSON array only.
@@ -112,18 +148,27 @@ except Exception as e:
 
 print(f"📋 Extracted {len(requirements)} requirements:")
 for r in requirements:
-    print("-", r["id"], r["title"])
+    print("-", r.get("id"), r.get("title"))
 
-# 3) Prompt for BDD test cases
+# 3) Prompt for BDD test cases (strict rules + tags)
 bdd_prompt = f"""
 You are a QA engineer. For each requirement below, generate 3 scenarios in Gherkin:
 - one "positive"
 - one "negative"
 - one "regression"
+
+Rules:
+- gherkin must always start with 'Scenario:'
+- each scenario must have at least one Given, one When, and one Then
+- use short, simple sentences
+- avoid referencing undefined requirements
+- include tags: @positive, @negative, @regression
+
 Return JSON array only, with:
 - requirement_id
 - scenario_type ("positive"/"negative"/"regression")
 - gherkin (single string; include 'Scenario:' and Given/When/Then)
+- tags (array, e.g. ["@positive"])
 
 Requirements:
 {json.dumps(requirements, ensure_ascii=False, indent=2)}
@@ -144,18 +189,23 @@ except Exception as e:
         f.write(raw_tests)
     raise
 
-# 4) Save outputs
+valid_count = sum(1 for t in test_cases if validate_gherkin(t.get("gherkin","")))
+print(f"✅ Generated {len(test_cases)} test cases ({valid_count} valid Gherkin)")
+
+# 4) Save outputs (JSON artifact)
 with open("output.json","w",encoding="utf-8") as f:
     json.dump({
-        "filtering": {"total_lines": len(all_lines),
-                      "kept": len(filtered_lines),
-                      "dropped": len(dropped_lines),
-                      "use_llm_classifier": SMALLTALK_LLM_CLASSIFIER},
+        "filtering": {
+            "total_lines": len(all_lines),
+            "kept": len(filtered_lines),
+            "dropped": len(dropped_lines),
+            "use_llm_classifier": SMALLTALK_LLM_CLASSIFIER
+        },
         "requirements": requirements,
         "test_cases": test_cases
     }, f, indent=2, ensure_ascii=False)
 
-# 5) Save to SQLite
+# 5) Save to SQLite (with metadata + tags)
 conn = sqlite3.connect("repo.db")
 cur = conn.cursor()
 cur.execute("""CREATE TABLE IF NOT EXISTS requirements (
@@ -171,17 +221,31 @@ cur.execute("""CREATE TABLE IF NOT EXISTS test_cases (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   requirement_id TEXT,
   scenario_type TEXT,
-  gherkin TEXT
+  gherkin TEXT,
+  tags TEXT
 )""")
 
 for r in requirements:
-    cur.execute("INSERT OR REPLACE INTO requirements VALUES (?,?,?,?,?,?,0)",
-        (r["id"], r["title"], r["description"],
-         "\n".join(r["acceptance_criteria"]),
-         r.get("priority"), r.get("epic")))
+    cur.execute(
+        "INSERT OR REPLACE INTO requirements (id,title,description,criteria,priority,epic,approved) VALUES (?,?,?,?,?,?,COALESCE((SELECT approved FROM requirements WHERE id=?),0))",
+        (
+            r["id"], r["title"], r["description"],
+            "\n".join(r["acceptance_criteria"]),
+            r.get("priority"), r.get("epic"),
+            r["id"]
+        )
+    )
+
 for t in test_cases:
-    cur.execute("INSERT INTO test_cases (requirement_id,scenario_type,gherkin) VALUES (?,?,?)",
-        (t["requirement_id"], t["scenario_type"], t["gherkin"]))
+    cur.execute(
+        "INSERT INTO test_cases (requirement_id,scenario_type,gherkin,tags) VALUES (?,?,?,?)",
+        (t["requirement_id"], t["scenario_type"], t["gherkin"], json.dumps(t.get("tags", [])))
+    )
+
 conn.commit(); conn.close()
 
-print("✅ Requirements & test cases saved. See output.json and repo.db")
+print(
+    f"🎯 Done. Lines kept: {len(filtered_lines)}/{len(all_lines)} "
+    f"(classifier={'on' if SMALLTALK_LLM_CLASSIFIER else 'off'}). "
+    "See output.json and repo.db"
+)
