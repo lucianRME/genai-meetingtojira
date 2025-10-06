@@ -54,4 +54,8 @@ tests_query = """
 """
 tests = pd.read_sql(tests_query, conn)
 tests_csv = f"output/test_cases_{ts}.csv"
-t
+tests.to_csv(tests_csv, index=False)
+
+conn.close()
+
+print(f"✅ Exported: {req_csv}, {tests_csv}")

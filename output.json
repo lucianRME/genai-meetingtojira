@@ -9,10 +9,10 @@
     {
       "id": "REQ-001",
       "title": "Email One-Time Code for Password Reset",
-      "description": "Implement a feature that allows users to reset their password using an email one-time code.",
+      "description": "Implement a feature that allows users to reset their password using a one-time code sent to their email.",
       "acceptance_criteria": [
-        "User receives an email with a one-time code for password reset.",
-        "The one-time code expires after 10 minutes.",
+        "User receives a one-time code via email for password reset.",
+        "The one-time code expires in 10 minutes.",
         "User can reset password using a valid one-time code."
       ],
       "priority": "High",
@@ -35,9 +35,9 @@
       "title": "Rate Limiting for Password Reset Attempts",
       "description": "Implement rate limiting to restrict password reset attempts to a maximum of 3 per hour per user.",
       "acceptance_criteria": [
-        "User is restricted to 3 password reset attempts per hour.",
-        "Attempts exceeding the limit are blocked.",
-        "User receives a notification when the limit is reached."
+        "User is restricted to a maximum of 3 password reset attempts per hour.",
+        "User receives a notification when the rate limit is reached.",
+        "Rate limiting is logged for monitoring purposes."
       ],
       "priority": "Medium",
       "epic": "Password Reset Feature"
@@ -45,33 +45,21 @@
     {
       "id": "REQ-004",
       "title": "Audit Event for Successful Password Reset",
-      "description": "Send an audit event whenever a password is successfully reset to ensure proper logging and verification.",
+      "description": "Send an audit event when a password is successfully reset to ensure traceability.",
       "acceptance_criteria": [
-        "Audit event is generated on successful password reset.",
-        "Audit event contains relevant user and timestamp information.",
-        "Audit event is logged in the system for verification."
+        "Audit event is generated upon successful password reset.",
+        "Audit event includes user ID and timestamp.",
+        "Audit event is logged and accessible for verification."
       ],
       "priority": "Medium",
       "epic": "Password Reset Feature"
-    },
-    {
-      "id": "REQ-005",
-      "title": "Regression Testing for Existing Login Flow",
-      "description": "Conduct regression tests to ensure that the existing login flow remains unaffected by the new password reset feature.",
-      "acceptance_criteria": [
-        "Existing login flow is tested for functionality.",
-        "No new issues are introduced in the login flow.",
-        "Regression test results are documented and reviewed."
-      ],
-      "priority": "High",
-      "epic": null
     }
   ],
   "test_cases": [
     {
       "requirement_id": "REQ-001",
       "scenario_type": "positive",
-      "gherkin": "Scenario: User receives an email with a one-time code for password reset Given a user requests a password reset When the request is processed Then the user receives an email with a one-time code",
+      "gherkin": "Scenario: User receives a one-time code via email for password reset Given a user requests a password reset When the request is processed Then the user receives a one-time code via email",
       "tags": [
         "@positive"
       ]
@@ -79,7 +67,7 @@
     {
       "requirement_id": "REQ-001",
       "scenario_type": "negative",
-      "gherkin": "Scenario: One-time code expires after 10 minutes Given a user receives a one-time code When 10 minutes pass without using the code Then the code is expired and cannot be used",
+      "gherkin": "Scenario: User does not receive a one-time code if email is invalid Given a user requests a password reset with an invalid email When the request is processed Then the user does not receive a one-time code",
       "tags": [
         "@negative"
       ]
@@ -95,7 +83,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Successful OTP verification Given a user has a valid OTP When the user enters the OTP Then the OTP is verified successfully",
+      "gherkin": "Scenario: Successful OTP verification Given a user has a valid OTP When the user enters the OTP Then the OTP is successfully verified",
       "tags": [
         "@positive"
       ]
@@ -103,7 +91,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Expired OTP scenario Given a user has an expired OTP When the user enters the OTP Then the OTP verification fails",
+      "gherkin": "Scenario: OTP verification fails for expired OTP Given a user has an expired OTP When the user enters the OTP Then the OTP verification fails",
       "tags": [
         "@negative"
       ]
@@ -111,7 +99,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Invalid OTP scenario Given a user enters an invalid OTP When the OTP is processed Then the OTP verification fails",
+      "gherkin": "Scenario: OTP verification fails for invalid OTP Given a user has an invalid OTP When the user enters the OTP Then the OTP verification fails",
       "tags": [
         "@regression"
       ]
@@ -119,7 +107,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "positive",
-      "gherkin": "Scenario: User is restricted to 3 password reset attempts per hour Given a user attempts to reset their password When the user makes 3 attempts within an hour Then further attempts are restricted",
+      "gherkin": "Scenario: User is restricted after 3 password reset attempts Given a user has made 3 password reset attempts in an hour When the user attempts another reset Then the user is restricted from making further attempts",
       "tags": [
         "@positive"
       ]
@@ -127,7 +115,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Attempts exceeding the limit are blocked Given a user has made 3 password reset attempts in an hour When the user tries a fourth attempt Then the attempt is blocked",
+      "gherkin": "Scenario: User is not restricted before 3 password reset attempts Given a user has made 2 password reset attempts in an hour When the user attempts another reset Then the user is not restricted",
       "tags": [
         "@negative"
       ]
@@ -135,7 +123,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "regression",
-      "gherkin": "Scenario: User receives a notification when the limit is reached Given a user has reached the password reset attempt limit When the user tries another attempt Then the user receives a notification about the limit",
+      "gherkin": "Scenario: Rate limiting is logged for monitoring Given a user has reached the rate limit for password reset attempts When the rate limit is triggered Then the event is logged for monitoring",
       "tags": [
         "@regression"
       ]
@@ -143,7 +131,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Audit event is generated on successful password reset Given a user successfully resets their password When the reset is completed Then an audit event is generated",
+      "gherkin": "Scenario: Audit event is generated for successful password reset Given a user successfully resets their password When the reset is completed Then an audit event is generated",
       "tags": [
         "@positive"
       ]
@@ -151,7 +139,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Audit event contains relevant user and timestamp information Given an audit event is generated When the event is logged Then it contains user and timestamp information",
+      "gherkin": "Scenario: No audit event for unsuccessful password reset Given a user fails to reset their password When the reset attempt is completed Then no audit event is generated",
       "tags": [
         "@negative"
       ]
@@ -159,31 +147,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Audit event is logged in the system for verification Given an audit event is generated When the event is processed Then it is logged in the system",
-      "tags": [
-        "@regression"
-      ]
-    },
-    {
-      "requirement_id": "REQ-005",
-      "scenario_type": "positive",
-      "gherkin": "Scenario: Existing login flow is tested for functionality Given the login flow is executed When the user enters valid credentials Then the user is logged in successfully",
-      "tags": [
-        "@positive"
-      ]
-    },
-    {
-      "requirement_id": "REQ-005",
-      "scenario_type": "negative",
-      "gherkin": "Scenario: No new issues are introduced in the login flow Given the login flow is tested When the new password reset feature is deployed Then no new issues are found in the login flow",
-      "tags": [
-        "@negative"
-      ]
-    },
-    {
-      "requirement_id": "REQ-005",
-      "scenario_type": "regression",
-      "gherkin": "Scenario: Regression test results are documented and reviewed Given regression tests are conducted When the tests are completed Then the results are documented and reviewed",
+      "gherkin": "Scenario: Audit event includes user ID and timestamp Given a successful password reset When the audit event is generated Then the event includes user ID and timestamp",
       "tags": [
         "@regression"
       ]
