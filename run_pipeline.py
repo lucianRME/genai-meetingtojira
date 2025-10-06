@@ -1,60 +1,111 @@
 #!/usr/bin/env python3
 """
-Runs your pipeline, then ensures CSVs and prints a clean summary.
+run_pipeline.py
+
+Runs the GenAI Requirements → BDD → Persist flow.
+
+- Default mode: "agentic" (multi-agent controller)
+- Fallback / optional mode: "classic" (direct run_pipeline from generate_req_bdd.py)
+- Always tries to export CSVs via export_csv.py if present
 """
-import os, sys, json, subprocess
+
+from __future__ import annotations
+import os
+import sys
+import subprocess
+import argparse
 from pathlib import Path
 
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+DEFAULT_MODE = os.getenv("PIPELINE_MODE", "agentic").lower()  # agentic | classic
+TRANSCRIPT_FILE = os.getenv("TRANSCRIPT_FILE")  # optional override via env
 
-def main():
-    # 1) Run your generator in-process if available
+def run_agentic(transcript_path: str | None) -> dict:
+    """Run the multi-agent controller flow."""
+    from agentic_controller import Controller
+    from agents.ingest_agent import IngestAgent
+    from agents.requirements_agent import RequirementAgent
+    from agents.review_agent import ReviewAgent
+    from agents.tests_agent import TestAgent
+    from agents.persist_agent import PersistAgent
+
+    def log(step, state):
+        if step == "requirements":
+            print(f"🧩 Requirements: {len(state.get('requirements', []))}")
+        elif step == "tests":
+            print(f"✅ Test cases: {len(state.get('test_cases', []))}")
+
+    flow = Controller(
+        steps=[IngestAgent(), RequirementAgent(), ReviewAgent(), TestAgent(), PersistAgent()],
+        on_step=log,
+    )
+    result = flow.run({"transcript_path": transcript_path})
+    print("🎯 Agentic run complete.")
+    return result
+
+def run_classic(transcript_path: str | None) -> dict:
+    """Run the original single-pipeline function, in-process if available, else subprocess."""
+    print("▶ Running classic pipeline (in-process)…")
     try:
         import generate_req_bdd as core
-        print("▶ Running pipeline (in-process)…")
-        result = core.run_pipeline(os.getenv("TRANSCRIPT_FILE"))
+        return core.run_pipeline(transcript_path)
     except Exception as e:
-        print(f"⚠️ In-process run failed or wrapper not applied yet: {e}")
+        print(f"⚠️ In-process classic run failed: {e}")
         print("▶ Falling back to subprocess…")
-        subprocess.run([sys.executable, "generate_req_bdd.py"], check=True)
-        result = None
+        args = [sys.executable, "generate_req_bdd.py"]
+        if transcript_path:
+            args.append(transcript_path)
+        subprocess.run(args, check=True)
+        return {"output_json": "output.json", "db_path": "repo.db"}  # minimal summary
 
-    # 2) Prefer your existing export script if present
+def maybe_export_csv():
+    """Try to export CSVs if export_csv.py is available."""
     if Path("export_csv.py").exists():
         print("▶ Exporting CSVs via export_csv.py …")
         subprocess.run([sys.executable, "export_csv.py"], check=True)
-        req_csv = Path("requirements.csv")
-        tc_csv  = Path("test_cases.csv")
     else:
-        # Minimal inline export from output.json (safe CSV via csv module recommended)
-        print("ℹ️ export_csv.py not found — writing demo CSVs inline.")
-        data = json.loads(Path("output.json").read_text(encoding="utf-8"))
-        from csv import writer
-        req_csv = OUTPUT_DIR / "demo_requirements.csv"
-        with req_csv.open("w", encoding="utf-8", newline="") as f:
-            w = writer(f)
-            w.writerow(["id","title","description","acceptance_criteria"])
-            for r in data.get("requirements", []):
-                w.writerow([r.get("id",""), r.get("title",""), r.get("description",""),
-                            " | ".join(r.get("acceptance_criteria", []))])
-        tc_csv = OUTPUT_DIR / "demo_test_cases.csv"
-        with tc_csv.open("w", encoding="utf-8", newline="") as f:
-            w = writer(f)
-            w.writerow(["requirement_id","scenario_type","gherkin"])
-            for t in data.get("test_cases", []):
-                w.writerow([t.get("requirement_id",""), t.get("scenario_type",""),
-                            (t.get("gherkin","") or "").replace("\n"," ")])
+        print("ℹ️ export_csv.py not found — skipping CSV export.")
 
-    # 3) Print a crisp demo summary
-    data = json.loads(Path("output.json").read_text(encoding="utf-8"))
-    filt = data.get("filtering", {})
+def main():
+    parser = argparse.ArgumentParser(description="Run the GenAI pipeline.")
+    parser.add_argument("--mode", choices=["agentic", "classic"], default=DEFAULT_MODE,
+                        help="Execution mode (default from PIPELINE_MODE env, default=agentic).")
+    parser.add_argument("--transcript", default=TRANSCRIPT_FILE,
+                        help="Optional path to .vtt transcript (overrides TRANSCRIPT_FILE env).")
+    parser.add_argument("--no-export", action="store_true",
+                        help="Skip CSV export step.")
+    args = parser.parse_args()
+
+    # Choose mode (agentic preferred)
+    result = {}
+    if args.mode == "agentic":
+        print("▶ Running **agentic** controller…")
+        try:
+            result = run_agentic(args.transcript)
+        except Exception as e:
+            print(f"⚠️ Agentic run failed: {e}")
+            print("▶ Falling back to **classic** pipeline…")
+            result = run_classic(args.transcript)
+    else:
+        result = run_classic(args.transcript)
+
+    # Optional export
+    if not args.no_export:
+        try:
+            maybe_export_csv()
+        except subprocess.CalledProcessError as e:
+            print(f"⚠️ CSV export failed: {e}")
+
+    # Final summary
+    out_json = result.get("output_json", "output.json")
+    db_path = result.get("db_path", "repo.db")
+    req_count = result.get("metrics", {}).get("requirements_count", result.get("requirements_count"))
+    tc_count = result.get("metrics", {}).get("test_cases_count", result.get("test_cases_count"))
     print("\n🚀 E2E DONE")
-    print(f"📄 lines: kept {filt.get('kept',0)}/{filt.get('total_lines',0)} (classifier={'on' if filt.get('use_llm_classifier') else 'off'})")
-    print(f"🧩 requirements: {len(data.get('requirements', []))}")
-    print(f"✅ test cases:    {len(data.get('test_cases', []))}")
-    print(f"📦 outputs:       output.json , repo.db")
-    print(f"📑 csv:           {req_csv} , {tc_csv}")
+    if req_count is not None:
+        print(f"🧩 requirements: {req_count}")
+    if tc_count is not None:
+        print(f"✅ test cases:    {tc_count}")
+    print(f"📦 outputs:       {out_json} , {db_path}")
 
 if __name__ == "__main__":
     main()
