@@ -11,7 +11,8 @@ requirements, generates BDD test cases, and persists outputs to JSON + SQLite.
 """
 
 from __future__ import annotations
-import os, sys, re, json, sqlite3
+import os, sys, re, json, sqlite3, time
+from functools import wraps
 from typing import List, Tuple
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -39,6 +40,32 @@ CLASSIFIER_MODEL = os.getenv("SMALLTALK_CLASSIFIER_MODEL", "gpt-4o-mini")
 
 # Files (env overridable)
 TRANSCRIPT_FILE = os.getenv("TRANSCRIPT_FILE", "meeting_transcript.vtt")
+
+# ----------------------------
+# Reliability helpers (retries)
+# ----------------------------
+def with_retries(max_retries=3, backoff=1.5):
+    def deco(fn):
+        @wraps(fn)
+        def wrapper(*args, **kwargs):
+            last = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except Exception as e:
+                    last = e
+                    if attempt == max_retries:
+                        raise
+                    time.sleep(backoff ** attempt)
+            raise last
+        return wrapper
+    return deco
+
+@with_retries()
+def _chat(messages, model=MODEL, temperature=TEMPERATURE):
+    return client.chat.completions.create(
+        model=model, messages=messages, temperature=temperature
+    )
 
 # ----------------------------
 # Helpers: I/O & Filtering
@@ -190,10 +217,53 @@ def enforce_ids_and_ac(requirements: List[dict]) -> List[dict]:
     return fixed
 
 # ----------------------------
+# DB schema guard (idempotent migration)
+# ----------------------------
+def ensure_schema():
+    conn = sqlite3.connect("repo.db")
+    cur = conn.cursor()
+    # Base tables
+    cur.execute("""CREATE TABLE IF NOT EXISTS requirements (
+      id TEXT PRIMARY KEY,
+      title TEXT,
+      description TEXT,
+      criteria TEXT,
+      priority TEXT,
+      epic TEXT,
+      approved INTEGER DEFAULT 0
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS test_cases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requirement_id TEXT,
+      scenario_type TEXT,
+      gherkin TEXT,
+      tags TEXT
+    )""")
+
+    # Add missing columns for old DBs
+    def have_col(table, col):
+        cur.execute(f"PRAGMA table_info({table})")
+        return any(r[1] == col for r in cur.fetchall())
+
+    if not have_col("requirements", "priority"):
+        cur.execute("ALTER TABLE requirements ADD COLUMN priority TEXT")
+    if not have_col("requirements", "epic"):
+        cur.execute("ALTER TABLE requirements ADD COLUMN epic TEXT")
+    if not have_col("requirements", "approved"):
+        cur.execute("ALTER TABLE requirements ADD COLUMN approved INTEGER DEFAULT 0")
+    if not have_col("test_cases", "tags"):
+        cur.execute("ALTER TABLE test_cases ADD COLUMN tags TEXT")
+
+    conn.commit(); conn.close()
+
+# ----------------------------
 # Core Pipeline
 # ----------------------------
 def run_pipeline(transcript_path: str | None = None):
     path = transcript_path or TRANSCRIPT_FILE
+
+    if not os.path.exists(path):
+        raise SystemExit(f"Transcript file not found: {path}")
 
     # 1) Read transcript
     all_lines = read_vtt_lines(path)
@@ -218,25 +288,8 @@ def run_pipeline(transcript_path: str | None = None):
                 "requirements": [],
                 "test_cases": []
             }, f, indent=2, ensure_ascii=False)
-        # Ensure DB exists with tables
-        conn = sqlite3.connect("repo.db"); cur = conn.cursor()
-        cur.execute("""CREATE TABLE IF NOT EXISTS requirements (
-          id TEXT PRIMARY KEY,
-          title TEXT,
-          description TEXT,
-          criteria TEXT,
-          priority TEXT,
-          epic TEXT,
-          approved INTEGER DEFAULT 0
-        )""")
-        cur.execute("""CREATE TABLE IF NOT EXISTS test_cases (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          requirement_id TEXT,
-          scenario_type TEXT,
-          gherkin TEXT,
-          tags TEXT
-        )""")
-        conn.commit(); conn.close()
+        # Ensure DB exists with tables (and columns)
+        ensure_schema()
         return {
             "output_json": "output.json",
             "db_path": "repo.db",
@@ -264,11 +317,7 @@ Transcript (noise-filtered):
 Return JSON array only.
 """.strip()
 
-    resp1 = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": req_prompt}],
-        temperature=TEMPERATURE
-    )
+    resp1 = _chat([{"role": "user", "content": req_prompt}])
     raw_req = resp1.choices[0].message.content
 
     try:
@@ -310,11 +359,7 @@ Requirements:
 {json.dumps(requirements, ensure_ascii=False, indent=2)}
 """.strip()
 
-    resp2 = client.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": bdd_prompt}],
-        temperature=TEMPERATURE
-    )
+    resp2 = _chat([{"role": "user", "content": bdd_prompt}])
     raw_tests = resp2.choices[0].message.content
 
     try:
@@ -345,24 +390,9 @@ Requirements:
         }, f, indent=2, ensure_ascii=False)
 
     # 6) Persist: SQLite (with metadata + tags)
+    ensure_schema()  # make sure columns exist even on older DBs
     conn = sqlite3.connect("repo.db")
     cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS requirements (
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      description TEXT,
-      criteria TEXT,
-      priority TEXT,
-      epic TEXT,
-      approved INTEGER DEFAULT 0
-    )""")
-    cur.execute("""CREATE TABLE IF NOT EXISTS test_cases (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      requirement_id TEXT,
-      scenario_type TEXT,
-      gherkin TEXT,
-      tags TEXT
-    )""")
 
     for r in requirements:
         cur.execute(

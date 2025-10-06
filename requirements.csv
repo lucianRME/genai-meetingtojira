@@ -1,5 +1,5 @@
 IssueKey,Summary,Description,IssueType,Status
-REQ-001,Email One-Time Code for Password Reset,"Implement a feature allowing users to reset their password using a one-time code sent via email, expiring in 10 minutes.",Story,Approved
-REQ-002,OTP Verification Handling,"Ensure the system correctly handles successful, expired, and invalid OTP scenarios during password reset.",Story,Draft
-REQ-003,Rate Limiting on Password Reset Attempts,Implement rate limiting to restrict users to a maximum of 3 password reset attempts per hour.,Story,Approved
-REQ-004,Audit Event for Successful Password Reset,Log an audit event whenever a password is successfully reset to ensure traceability.,Story,Draft
+REQ-001,Email OTP for Password Reset,Implement a feature that allows users to reset their passwords using a one-time code sent to their email.,Story,Draft
+REQ-002,OTP Verification Scenarios,Develop test cases to verify the OTP functionality during password reset.,Story,Draft
+REQ-003,Rate Limiting for Password Reset Attempts,Implement rate limiting to restrict the number of password reset attempts per user.,Story,Draft
+REQ-004,Audit Event for Successful Password Reset,Log an audit event whenever a password is successfully reset.,Story,Draft
