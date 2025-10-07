@@ -1,163 +1,323 @@
-#!/usr/bin/env python3
-import os, json, requests, sqlite3
-from dotenv import load_dotenv
+"""
+agents/jira_agent.py
 
-load_dotenv()
+Idempotent Jira synchronization for FlowMind:
+- Reads requirements and test cases from repo.db
+- Creates/updates Jira issues deterministically using labels
+- Writes Jira keys back into the DB
 
-JIRA_URL = os.getenv("JIRA_URL", "").rstrip("/")
-JIRA_USER = os.getenv("JIRA_USER")
-JIRA_TOKEN = os.getenv("JIRA_API_TOKEN") or os.getenv("JIRA_TOKEN")
-JIRA_PROJECT = os.getenv("JIRA_PROJECT", "SCRUM")
-JIRA_INTEGRATION = os.getenv("JIRA_INTEGRATION", "1") == "1"
+SQLite schema expected:
+  requirements(
+      id TEXT PRIMARY KEY,           -- e.g., 'REQ-001'  (external stable ID)
+      title TEXT,
+      description TEXT,
+      criteria TEXT,
+      priority TEXT,
+      epic TEXT,
+      approved INTEGER DEFAULT 0,
+      jira_key TEXT
+  )
 
-def _auth():
-    return (JIRA_USER, JIRA_TOKEN)
+  test_cases(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      requirement_id TEXT,           -- e.g., 'REQ-001' (parent requirement.id)
+      scenario_type TEXT,            -- e.g., 'positive' | 'negative' | 'regression'
+      gherkin TEXT,
+      tags TEXT,
+      jira_key TEXT
+  )
 
-# ---------- ADF helpers ----------
-def adf_paragraph(text: str):
-    return {"type":"paragraph","content":[{"type":"text","text": text or ""}] if text else []}
+Environment variables supported:
+  JIRA_URL                 (required) e.g., https://yourdomain.atlassian.net
+  JIRA_USER or JIRA_EMAIL  (required) Jira account email/username for API
+  JIRA_API_TOKEN or JIRA_TOKEN (required) personal API token
+  JIRA_PROJECT             (optional, default='SCRUM') target project key
+  JIRA_INTEGRATION         (optional, '1' to enable; default '1')
+  JIRA_APPROVED_ONLY       (optional, '1' to sync only approved requirements; default '1')
 
-def adf_bullet_list(items):
-    return {"type":"bulletList","content":[{"type":"listItem","content":[adf_paragraph(str(i))]} for i in (items or []) if str(i).strip()]}
+Typical use:
+  from agents.jira_agent import create_from_db
+  create_from_db("repo.db")
+"""
 
-def make_adf_description(heading=None, body=None, bullets=None):
-    content=[]
-    if heading:
-        content.append({"type":"paragraph","content":[{"type":"text","text":heading,"marks":[{"type":"strong"}]}]})
-    if body:
-        content.append(adf_paragraph(body))
-    if bullets:
-        content.append(adf_bullet_list(bullets))
-    return {"type":"doc","version":1,"content": content or [adf_paragraph("")]}
+import os
+import re
+import sqlite3
+from typing import Dict, Any, Optional, Tuple
+import requests
 
-# ---------- Jira helpers ----------
-def get_creatable_issue_types(project_key: str):
-    url = f"{JIRA_URL}/rest/api/3/issue/createmeta"
-    params = {"projectKeys": project_key, "expand": "projects.issuetypes.fields"}
-    r = requests.get(url, auth=_auth(), params=params, timeout=30); r.raise_for_status()
-    data = r.json()
-    projects = data.get("projects", []) or data.get("values", [])
-    if not projects: return []
-    return [{"id": t.get("id"), "name": t.get("name")} for t in projects[0].get("issuetypes", [])]
 
-def resolve_issue_type_id(preferred_names=None):
-    preferred = preferred_names or ["Story","User Story","Task","Ticket","Issue"]
-    avail = get_creatable_issue_types(JIRA_PROJECT)
-    if not avail: raise SystemExit(f"No creatable issue types for '{JIRA_PROJECT}'.")
-    idx = {t["name"].lower(): t["id"] for t in avail if t.get("id") and t.get("name")}
-    for name in preferred:
-        if name.lower() in idx: return idx[name.lower()], name
-    first = avail[0]; return first["id"], first["name"]
+# -----------------------------------------------------------------------------
+# Utilities
+# -----------------------------------------------------------------------------
 
-def jql_search_first_key(jql: str):
-    url = f"{JIRA_URL}/rest/api/3/search"
-    params = {"jql": jql, "maxResults": 1, "fields": "key"}
-    r = requests.get(url, auth=_auth(), params=params, timeout=30)
-    if r.status_code != 200: return None
-    issues = r.json().get("issues", [])
-    return issues[0]["key"] if issues else None
+def _slug(s: str) -> str:
+    """Make a short, label-safe slug."""
+    s = (s or "").lower()
+    s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
+    return s[:60] or "na"
 
-def create_or_get_issue(summary, description_text=None, bullets=None, issue_type_hint="Story", labels=None, unique_label=None):
-    """
-    Idempotent creation: if issue with unique_label exists -> return it; else create.
-    """
-    labels = (labels or [])[:]
-    if unique_label and unique_label not in labels:
-        labels.append(unique_label)
 
-    # Idempotency check via JQL on unique label within project
-    if unique_label:
-        key = jql_search_first_key(f'project = {JIRA_PROJECT} AND labels = "{unique_label}" ORDER BY created DESC')
-        if key:
-            print(f"↩︎ Reusing existing issue: {key} (label={unique_label})")
-            return key
+def _adf_p(text: str) -> Dict[str, Any]:
+    """Create a simple ADF paragraph node."""
+    return {"type": "paragraph", "content": [{"type": "text", "text": text}]}
 
-    if not JIRA_INTEGRATION:
-        print(f"[SIMULATION] Would create issue in {JIRA_PROJECT}: {summary} ({issue_type_hint}) labels={labels}")
-        return f"SIM-{abs(hash(summary))%1000}"
 
-    issue_type_id, chosen_name = resolve_issue_type_id(preferred_names=[issue_type_hint,"Story","Task"])
-    url = f"{JIRA_URL}/rest/api/3/issue"
-    headers = {"Content-Type": "application/json"}
-    adf = make_adf_description(heading="Description", body=description_text, bullets=bullets)
+def _adf_doc(*nodes) -> Dict[str, Any]:
+    """Wrap nodes in an ADF document."""
+    return {"type": "doc", "version": 1, "content": list(nodes)}
 
-    payload = {
-        "fields": {
-            "project": {"key": JIRA_PROJECT},
-            "summary": (summary or "")[:254],
-            "issuetype": {"id": issue_type_id},
-            "description": adf,
-            "labels": list(set(labels or []))
+
+def _req_label(req_id: str) -> str:
+    return f"req-{(req_id or '').lower()}"
+
+
+def _tc_label(req_id: str, scenario_type: str) -> str:
+    return f"tc-{(req_id or '').lower()}-{_slug(scenario_type)}"
+
+
+# -----------------------------------------------------------------------------
+# Jira API helper
+# -----------------------------------------------------------------------------
+
+class JiraAgent:
+    """Lightweight Jira client with idempotent upsert-by-label semantics."""
+
+    def __init__(self, base_url: str, email: str, api_token: str, project_key: str, timeout: int = 30):
+        self.base_url = base_url.rstrip("/")
+        self.auth = (email, api_token)
+        self.project_key = project_key
+        self.timeout = timeout
+        self._session = requests.Session()
+
+    def _request(self, method: str, path: str, **kwargs) -> requests.Response:
+        url = f"{self.base_url}{path}"
+        r = self._session.request(method, url, auth=self.auth, timeout=self.timeout, **kwargs)
+        r.raise_for_status()
+        return r
+
+    def _jql_search_one(self, jql: str) -> Optional[str]:
+        """
+        Try Jira Cloud v3 search with POST.
+        Some tenants return 410 for GET /rest/api/*/search; POST is supported.
+        Return the first issue key or None.
+        """
+        try:
+            r = self._request("POST", "/rest/api/3/search",
+                              json={"jql": jql, "maxResults": 2})
+            issues = r.json().get("issues", [])
+            return issues[0]["key"] if issues else None
+        except requests.HTTPError as e:
+            # If search is unavailable (410/403/etc.), log and continue without search.
+            print(f"ℹ️ JQL search unavailable ({e}). Will skip search for this item.")
+            return None
+
+    def upsert_issue(
+        self,
+        *,
+        label: str,
+        summary: str,
+        description_adf: Dict[str, Any],
+        issue_type_name: str,
+        existing_key: Optional[str] = None
+    ) -> Tuple[str, bool]:
+        """
+        Create or update an issue deterministically.
+        Preference order:
+          1) If existing_key provided (from DB), update it directly.
+          2) Else, try to find by label via JQL search (best-effort).
+          3) Else, create a new issue.
+        Returns (jira_key, created_bool).
+        """
+        payload_update = {
+            "fields": {
+                "summary": summary,
+                "issuetype": {"name": issue_type_name},
+                "labels": [label, "genai-sync"],
+                "description": description_adf,
+            }
         }
-    }
+        payload_create = {
+            "fields": {
+                "project": {"key": self.project_key},
+                **payload_update["fields"],
+            }
+        }
 
-    resp = requests.post(url, auth=_auth(), headers=headers, data=json.dumps(payload), timeout=30)
-    if resp.status_code == 201:
-        key = resp.json().get("key")
-        print(f"✅ Created Jira issue: {key}  (type={chosen_name}, label={unique_label})")
-        return key
+        # 1) Update by known issue key if we have it
+        if existing_key:
+            try:
+                self._request("PUT", f"/rest/api/3/issue/{existing_key}", json=payload_update)
+                return existing_key, False
+            except requests.HTTPError as e:
+                print(f"ℹ️ Existing key {existing_key} not updatable ({e}). Will try search/create.")
 
-    print(f"⚠️ Failed to create issue ({resp.status_code}): {resp.text}")
-    return None
+        # 2) Try to locate by label (best-effort)
+        jql = f'project = {self.project_key} AND labels = "{label}"'
+        found = self._jql_search_one(jql)
+        if found:
+            self._request("PUT", f"/rest/api/3/issue/{found}", json=payload_update)
+            return found, False
 
-# ---------- Use from DB (optional) ----------
-def create_from_db(db_path="repo.db"):
-    conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
+        # 3) Create new issue
+        r = self._request("POST", "/rest/api/3/issue", json=payload_create)
+        return r.json()["key"], True
 
-    # ensure jira_key columns exist (best-effort)
-    try: cur.execute("ALTER TABLE requirements ADD COLUMN jira_key TEXT")
-    except: pass
-    try: cur.execute("ALTER TABLE test_cases ADD COLUMN jira_key TEXT")
-    except: pass
 
-    # 1) Requirements -> Stories (idempotent)
-    for r in cur.execute("SELECT id, title, description, criteria, COALESCE(jira_key,'') as jira_key FROM requirements ORDER BY id"):
-        req_id = r["id"]
-        if r["jira_key"]:
-            print(f"= Skip {req_id}: already linked to {r['jira_key']}")
-            continue
-        ac = (r["criteria"] or "").split("\n") if r["criteria"] else []
-        unique = f"req-{req_id}".lower()  # unique label
-        key = create_or_get_issue(
-            summary=r["title"] or req_id,
-            description_text=r["description"],
-            bullets=ac,
-            issue_type_hint="Story",
-            labels=["flowmind","genai"],
-            unique_label=unique
-        )
-        if key:
-            cur.execute("UPDATE requirements SET jira_key=? WHERE id=?", (key, req_id))
-            conn.commit()
+# -----------------------------------------------------------------------------
+# Main sync entrypoint
+# -----------------------------------------------------------------------------
 
-    # 2) Test cases -> Tasks/Subtasks/etc. (basic example: create Tasks per test)
-    for t in cur.execute("SELECT requirement_id, scenario_type, gherkin, COALESCE(jira_key,'') as jira_key FROM test_cases"):
-        if t["jira_key"]:
-            print(f"= Skip test for {t['requirement_id']}:{t['scenario_type']} already linked to {t['jira_key']}")
-            continue
-        unique = f"tc-{t['requirement_id']}-{t['scenario_type']}".lower()
-        summary = f"Test: {t['scenario_type']} for {t['requirement_id']}"
-        key = create_or_get_issue(
-            summary=summary,
-            description_text=t["gherkin"],
-            bullets=None,
-            issue_type_hint="Task",
-            labels=["flowmind","genai"],
-            unique_label=unique
-        )
-        if key:
-            cur.execute(
-                "UPDATE test_cases SET jira_key=? WHERE requirement_id=? AND scenario_type=?",
-                (key, t["requirement_id"], t["scenario_type"])
+def create_from_db(db_path: str):
+    """
+    Read all requirements & test cases from the local SQLite DB and
+    upsert them into Jira. Idempotent (based on deterministic labels).
+
+    Respects:
+      - JIRA_INTEGRATION (default '1' → enabled)
+      - JIRA_APPROVED_ONLY (default '1' → only approved requirements; tests are included
+        when their parent requirement is approved)
+    """
+    # Integration toggle
+    if os.getenv("JIRA_INTEGRATION", "1") != "1":
+        print("ℹ️ JIRA_INTEGRATION=0 → skipping Jira sync.")
+        return
+
+    # Resolve environment variables and validate
+    jira_url = os.environ.get("JIRA_URL")
+    jira_user = os.environ.get("JIRA_USER") or os.environ.get("JIRA_EMAIL")
+    jira_token = os.environ.get("JIRA_API_TOKEN") or os.environ.get("JIRA_TOKEN")
+    jira_project = os.environ.get("JIRA_PROJECT", "SCRUM")
+    approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
+
+    missing = [k for k, v in {
+        "JIRA_URL": jira_url,
+        "JIRA_USER/JIRA_EMAIL": jira_user,
+        "JIRA_API_TOKEN/JIRA_TOKEN": jira_token,
+    }.items() if not v]
+    if missing:
+        raise RuntimeError(f"Missing Jira environment variables: {', '.join(missing)}")
+
+    print(f"🔐 Connecting to Jira project '{jira_project}' as {jira_user}…")
+
+    ja = JiraAgent(
+        base_url=jira_url,
+        email=jira_user,
+        api_token=jira_token,
+        project_key=jira_project,
+    )
+
+    # Open DB
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+
+    # ---------------- Requirements ----------------
+    if approved_only:
+        c.execute("""
+            SELECT rowid, id AS req_id, title, COALESCE(jira_key, '')
+            FROM requirements
+            WHERE COALESCE(approved, 0) = 1
+            ORDER BY rowid
+        """)
+    else:
+        c.execute("""
+            SELECT rowid, id AS req_id, title, COALESCE(jira_key, '')
+            FROM requirements
+            ORDER BY rowid
+        """)
+    req_rows = c.fetchall()
+
+    # ---------------- Test cases ----------------
+    # Deduplicate: keep latest per (requirement_id, scenario_type) using rowid
+    # If approved_only → include tests only for approved parent requirements
+    if approved_only:
+        c.execute("""
+            WITH latest AS (
+              SELECT MAX(tc.rowid) AS rowid
+              FROM test_cases tc
+              JOIN requirements r ON r.id = tc.requirement_id
+              WHERE COALESCE(r.approved, 0) = 1
+              GROUP BY tc.requirement_id, tc.scenario_type
             )
-            conn.commit()
+            SELECT t.rowid, t.requirement_id AS req_id,
+                   t.scenario_type, COALESCE(t.jira_key, '')
+            FROM test_cases t
+            JOIN latest l ON l.rowid = t.rowid
+            ORDER BY t.rowid
+        """)
+    else:
+        c.execute("""
+            WITH latest AS (
+              SELECT MAX(rowid) AS rowid
+              FROM test_cases
+              GROUP BY requirement_id, scenario_type
+            )
+            SELECT t.rowid, t.requirement_id AS req_id,
+                   t.scenario_type, COALESCE(t.jira_key, '')
+            FROM test_cases t
+            JOIN latest l ON l.rowid = t.rowid
+            ORDER BY t.rowid
+        """)
+    tc_rows = c.fetchall()
+
+    # ---------------- Sync requirements ----------------
+    print(f"📤 Syncing {len(req_rows)} requirements to Jira…")
+    for rid, req_id, title, jira_key in req_rows:
+        if not req_id:
+            print(f"= Skip requirement rowid={rid}: missing id")
+            continue
+
+        label = _req_label(req_id)
+        summary = f"[{req_id}] {title or 'Untitled requirement'}"
+        desc = _adf_doc(
+            _adf_p(f"Auto-synced by FlowMind – requirement {req_id}."),
+            _adf_p("Source: meeting transcript → pipeline → SQLite → Jira.")
+        )
+
+        try:
+            key, created = ja.upsert_issue(
+                label=label,
+                summary=summary,
+                description_adf=desc,
+                issue_type_name="Story",
+                existing_key=(jira_key or None)  # prefer direct update if we know the key
+            )
+            print(f"{'✅ Created' if created else '↻ Updated'} requirement: {key} ({label})")
+            if not jira_key or jira_key != key:
+                c.execute("UPDATE requirements SET jira_key=? WHERE rowid=?", (key, rid))
+                conn.commit()
+        except requests.HTTPError as e:
+            print(f"❌ Failed requirement {req_id} ({label}): {e}")
+
+    # ---------------- Sync test cases ----------------
+    print(f"📤 Syncing {len(tc_rows)} test cases to Jira…")
+    for tid, req_id, scenario_type, jira_key in tc_rows:
+        if not (req_id and scenario_type):
+            print(f"= Skip test rowid={tid}: missing requirement_id/scenario_type")
+            continue
+
+        label = _tc_label(req_id, scenario_type)
+        ext = f"TC::{req_id}::{scenario_type}"
+        summary = f"[{ext}] {scenario_type.capitalize()} for {req_id}"
+        desc = _adf_doc(
+            _adf_p(f"Auto-synced test case for {req_id}. Scenario: {scenario_type}."),
+            _adf_p("Generated by FlowMind pipeline (BDD/Gherkin).")
+        )
+
+        try:
+            key, created = ja.upsert_issue(
+                label=label,
+                summary=summary,
+                description_adf=desc,
+                issue_type_name="Task",
+                existing_key=(jira_key or None)  # prefer direct update if we know the key
+            )
+            print(f"{'✅ Created' if created else '↻ Updated'} test: {key} ({label})")
+            if not jira_key or jira_key != key:
+                c.execute("UPDATE test_cases SET jira_key=? WHERE rowid=?", (key, tid))
+                conn.commit()
+        except requests.HTTPError as e:
+            print(f"❌ Failed test {ext} ({label}): {e}")
 
     conn.close()
-
-if __name__ == "__main__":
-    print("▶ Jira integration (idempotent) …")
-    # Example single test:
-    # create_or_get_issue("FlowMind Test Story", "Created via API.", bullets=["AC1","AC2","AC3"], issue_type_hint="Story", labels=["flowmind","genai"], unique_label="req-REQ-TEST")
-    # Or drive from DB:
-    create_from_db("repo.db")
+    print("✅ Jira sync complete.")

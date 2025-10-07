@@ -1,0 +1,16 @@
+IssueKey,Summary,Description,IssueType,Priority,EpicLink,Status,AcceptanceCriteria
+REQ-001,Email One-Time Code for Password Reset,Implement a feature allowing users to reset their password using an email one-time code that expires in 10 minutes.,Story,High,Password Reset Feature,Draft,"User receives a one-time code via email for password reset.
+One-time code expires after 10 minutes.
+User can reset password using a valid one-time code."
+REQ-002,OTP Verification Scenarios,Develop positive and negative test cases for OTP verification during password reset.,Story,Medium,Password Reset Feature,Draft,"Test case for successful OTP verification.
+Test case for expired OTP scenario.
+Test case for invalid OTP scenario."
+REQ-003,Rate Limiting for Password Reset Attempts,Implement rate limiting to restrict password reset attempts to a maximum of 3 per hour per user.,Story,High,Password Reset Feature,Draft,"User cannot attempt password reset more than 3 times per hour.
+System logs an attempt each time a user requests a password reset.
+User receives a notification when the rate limit is reached."
+REQ-004,Audit Event for Successful Password Reset,Send an audit event to the system logs when a password is successfully reset.,Story,Medium,Password Reset Feature,Draft,"Audit event is generated upon successful password reset.
+Audit event includes user ID and timestamp.
+Audit event is accessible in system logs."
+REQ-005,Regression Testing for Existing Login Flow,Conduct regression tests to ensure the existing login flow is not affected by the new password reset feature.,Story,High,Password Reset Feature,Draft,"Existing login functionality remains unchanged.
+No new errors are introduced in the login process.
+All existing login test cases pass successfully."

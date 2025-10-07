@@ -1,0 +1,16 @@
+IssueKey,Summary,Description,IssueType,Priority,EpicLink,Status,AcceptanceCriteria
+REQ-005,Regression Testing for Existing Login Flow,Conduct regression tests to ensure that the existing login flow remains unaffected by the new password reset feature.,Story,High,,Draft,"Existing login flow is tested for functionality.
+No new issues are introduced in the login flow.
+Regression test results are documented and reviewed."
+REQ-004,Audit Event for Successful Password Reset,Log an audit event whenever a password is successfully reset.,Story,Medium,Password Reset Enhancement,Draft,"Audit event is generated upon successful password reset.
+Audit event includes user ID and timestamp.
+Audit event is accessible in system logs."
+REQ-001,Email One-Time Code for Password Reset,Implement a feature that allows users to reset their password using a one-time code sent via email.,Story,High,Password Reset Enhancement,Draft,"User receives an email with a one-time code for password reset.
+The one-time code expires in 10 minutes.
+User can reset the password using the valid one-time code."
+REQ-002,Rate Limiting for Password Reset Attempts,Introduce rate limiting to restrict the number of password reset attempts to enhance security.,Story,High,Password Reset Enhancement,Draft,"Maximum of 3 password reset attempts allowed per hour per user.
+User receives an error message after exceeding the limit.
+Rate limit resets after one hour."
+REQ-003,Audit Event for Successful Password Reset,Log an audit event whenever a password is successfully reset to maintain a security trail.,Story,Medium,Security and Compliance,Draft,"An audit event is generated upon successful password reset.
+Audit event includes user ID and timestamp.
+Audit logs can be accessed for verification."

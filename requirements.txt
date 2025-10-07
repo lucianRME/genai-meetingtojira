@@ -12,3 +12,6 @@ flask>=2.3,<3
 
 # SQLite helpers (you use the stdlib sqlite3; this is optional utility)
 sqlite-utils>=3.35,<4
+
+# Jira & HTTP integrations
+requests
