@@ -7,6 +7,7 @@ Enhanced Jira synchronization for FlowMind:
 - Writes Jira keys back into the DB
 - Includes requirement Description + Acceptance Criteria in Stories
 - Includes Gherkin in Tasks (code block)
+- Links each Test Task to its parent Requirement Story using issueLink
 
 SQLite schema expected:
   requirements(
@@ -37,6 +38,7 @@ Env:
   JIRA_INTEGRATION (opt, '1' default)
   JIRA_APPROVED_ONLY (opt, '1' default)
   JIRA_SKIP_SEARCH (opt, '0' default)  # if '1', never JQL search
+  JIRA_LINK_TYPE (opt, default 'Relates')  # link type name used for test→story links
 """
 
 import os
@@ -143,6 +145,27 @@ class JiraAgent:
         r = self._request("POST", "/rest/api/3/issue", json=payload_create)
         return r.json()["key"], True
 
+    def link_issues(self, *, inward_key: str, outward_key: str, link_type: str = "Relates") -> None:
+        """
+        Create an issue link between inward_key <-link_type-> outward_key.
+        For symmetric types like 'Relates', direction doesn't matter.
+        If a duplicate link error occurs, it's ignored.
+        """
+        payload = {
+            "type": {"name": link_type},
+            "inwardIssue": {"key": inward_key},
+            "outwardIssue": {"key": outward_key},
+        }
+        try:
+            self._request("POST", "/rest/api/3/issueLink", json=payload)
+        except requests.HTTPError as e:
+            # Common duplicate case returns 400; safe to ignore
+            status = getattr(e.response, "status_code", None)
+            if status == 400:
+                print(f"ℹ️ Link {inward_key}—{link_type}—{outward_key} may already exist; skipping.")
+            else:
+                print(f"ℹ️ Issue link creation skipped for {inward_key} ←{link_type}→ {outward_key}: {e}")
+
 
 # ---------------- Main sync ----------------
 
@@ -156,6 +179,7 @@ def create_from_db(db_path: str):
     jira_token = os.environ.get("JIRA_API_TOKEN") or os.environ.get("JIRA_TOKEN")
     jira_project = os.environ.get("JIRA_PROJECT", "SCRUM")
     approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
+    link_type = os.getenv("JIRA_LINK_TYPE", "Relates")
 
     missing = [k for k, v in {
         "JIRA_URL": jira_url,
@@ -191,44 +215,7 @@ def create_from_db(db_path: str):
         """)
     req_rows = c.fetchall()
 
-    # ---- Test cases (dedup latest per req_id+scenario_type; include Gherkin) ----
-    if approved_only:
-        c.execute("""
-            WITH latest AS (
-              SELECT MAX(tc.rowid) AS rowid
-              FROM test_cases tc
-              JOIN requirements r ON r.id = tc.requirement_id
-              WHERE COALESCE(r.approved, 0) = 1
-              GROUP BY tc.requirement_id, tc.scenario_type
-            )
-            SELECT t.rowid,
-                   t.requirement_id AS req_id,
-                   t.scenario_type,
-                   COALESCE(t.gherkin,'') AS gherkin,
-                   COALESCE(t.jira_key,'') AS jira_key
-            FROM test_cases t
-            JOIN latest l ON l.rowid = t.rowid
-            ORDER BY t.rowid
-        """)
-    else:
-        c.execute("""
-            WITH latest AS (
-              SELECT MAX(rowid) AS rowid
-              FROM test_cases
-              GROUP BY requirement_id, scenario_type
-            )
-            SELECT t.rowid,
-                   t.requirement_id AS req_id,
-                   t.scenario_type,
-                   COALESCE(t.gherkin,'') AS gherkin,
-                   COALESCE(t.jira_key,'') AS jira_key
-            FROM test_cases t
-            JOIN latest l ON l.rowid = t.rowid
-            ORDER BY t.rowid
-        """)
-    tc_rows = c.fetchall()
-
-    # ---- Sync requirements ----
+    # ---- Sync requirements first (so their jira_key is persisted) ----
     print(f"📤 Syncing {len(req_rows)} requirements to Jira…")
     for rid, req_id, title, description, criteria, jira_key in req_rows:
         if not req_id:
@@ -238,21 +225,18 @@ def create_from_db(db_path: str):
         label = _req_label(req_id)
         summary = f"[{req_id}] {title or 'Untitled requirement'}"
 
-        content = []
-        content.append(_adf_h("Requirement", 2))
-        content.append(_adf_p(f"ID: {req_id}"))
-        content.append(_adf_p(f"Title: {title or '—'}"))
+        content = [
+            _adf_h("Requirement", 2),
+            _adf_p(f"ID: {req_id}"),
+            _adf_p(f"Title: {title or '—'}"),
+        ]
         if description:
-            content.append(_adf_h("Description", 3))
-            content.append(_adf_p(description))
+            content += [_adf_h("Description", 3), _adf_p(description)]
         if criteria:
-            content.append(_adf_h("Acceptance Criteria", 3))
-            content.append(_adf_p(criteria))
+            content += [_adf_h("Acceptance Criteria", 3), _adf_p(criteria)]
         if not (description or criteria):
             content.append(_adf_p("No detailed description or criteria provided."))
-        content.append(_adf_h("Sync", 3))
-        content.append(_adf_p("Auto-synced by FlowMind pipeline."))
-
+        content += [_adf_h("Sync", 3), _adf_p("Auto-synced by FlowMind pipeline.")]
         desc = _adf_doc(*content)
 
         try:
@@ -270,9 +254,54 @@ def create_from_db(db_path: str):
         except requests.HTTPError as e:
             print(f"❌ Failed requirement {req_id} ({label}): {e}")
 
-    # ---- Sync test cases (include Gherkin) ----
+    # Refresh a mapping of requirement → jira_key after requirement sync
+    c.execute("SELECT id, COALESCE(jira_key,'') FROM requirements")
+    parent_map = dict(c.fetchall())
+
+    # ---- Test cases (dedup latest per req_id+scenario_type; include Gherkin, parent keys if present) ----
+    if approved_only:
+        c.execute("""
+            WITH latest AS (
+              SELECT MAX(tc.rowid) AS rowid
+              FROM test_cases tc
+              JOIN requirements r ON r.id = tc.requirement_id
+              WHERE COALESCE(r.approved, 0) = 1
+              GROUP BY tc.requirement_id, tc.scenario_type
+            )
+            SELECT t.rowid,
+                   t.requirement_id AS req_id,
+                   t.scenario_type,
+                   COALESCE(t.gherkin,'') AS gherkin,
+                   COALESCE(t.jira_key,'') AS jira_key,
+                   COALESCE(r.jira_key,'') AS parent_key
+            FROM test_cases t
+            JOIN latest l ON l.rowid = t.rowid
+            JOIN requirements r ON r.id = t.requirement_id
+            ORDER BY t.rowid
+        """)
+    else:
+        c.execute("""
+            WITH latest AS (
+              SELECT MAX(rowid) AS rowid
+              FROM test_cases
+              GROUP BY requirement_id, scenario_type
+            )
+            SELECT t.rowid,
+                   t.requirement_id AS req_id,
+                   t.scenario_type,
+                   COALESCE(t.gherkin,'') AS gherkin,
+                   COALESCE(t.jira_key,'') AS jira_key,
+                   COALESCE(r.jira_key,'') AS parent_key
+            FROM test_cases t
+            JOIN latest l ON l.rowid = t.rowid
+            JOIN requirements r ON r.id = t.requirement_id
+            ORDER BY t.rowid
+        """)
+    tc_rows = c.fetchall()
+
+    # ---- Sync test cases + link to parent requirement ----
     print(f"📤 Syncing {len(tc_rows)} test cases to Jira…")
-    for tid, req_id, scenario_type, gherkin, jira_key in tc_rows:
+    for tid, req_id, scenario_type, gherkin, jira_key, parent_key in tc_rows:
         if not (req_id and scenario_type):
             print(f"= Skip test rowid={tid}: missing requirement_id/scenario_type")
             continue
@@ -281,15 +310,15 @@ def create_from_db(db_path: str):
         ext = f"TC::{req_id}::{scenario_type}"
         summary = f"[{ext}] {scenario_type.capitalize()} for {req_id}"
 
-        content = []
-        content.append(_adf_h("Test Case", 2))
-        content.append(_adf_p(f"Requirement: {req_id}"))
-        content.append(_adf_p(f"Scenario type: {scenario_type}"))
-        content.append(_adf_h("Gherkin", 3))
-        content.append(_adf_code(gherkin or "", language="gherkin"))
-        content.append(_adf_h("Sync", 3))
-        content.append(_adf_p("Auto-synced by FlowMind pipeline (BDD/Gherkin)."))
-
+        content = [
+            _adf_h("Test Case", 2),
+            _adf_p(f"Requirement: {req_id}"),
+            _adf_p(f"Scenario type: {scenario_type}"),
+            _adf_h("Gherkin", 3),
+            _adf_code(gherkin or "", language="gherkin"),
+            _adf_h("Sync", 3),
+            _adf_p("Auto-synced by FlowMind pipeline (BDD/Gherkin)."),
+        ]
         desc = _adf_doc(*content)
 
         try:
@@ -304,6 +333,18 @@ def create_from_db(db_path: str):
             if not jira_key or jira_key != key:
                 c.execute("UPDATE test_cases SET jira_key=? WHERE rowid=?", (key, tid))
                 conn.commit()
+
+            # Link to parent Story if we have a parent key (or can find one in parent_map)
+            parent = parent_key or parent_map.get(req_id, "")
+            if parent:
+                try:
+                    ja.link_issues(inward_key=parent, outward_key=key, link_type=link_type)
+                    print(f"🔗 Linked test {key} to story {parent} via '{link_type}'.")
+                except requests.HTTPError as e:
+                    print(f"ℹ️ Linking skipped for test {key} → story {parent}: {e}")
+            else:
+                print(f"ℹ️ No parent Jira key found for requirement {req_id}; link skipped.")
+
         except requests.HTTPError as e:
             print(f"❌ Failed test {ext} ({label}): {e}")
 

@@ -1,0 +1,22 @@
+{% extends "review/layout.html" %}
+{% block body %}
+<h1 class="mb">{{ title }}</h1>
+
+<form method="post" action="{{ url_for('review.sync') }}" class="mb">
+  <button name="mode" value="approved">🔄 Sync Approved to Jira</button>
+  <button name="mode" value="all">⚠️ Sync ALL to Jira</button>
+  <a href="{{ url_for('review.index') }}" style="margin-left:12px;">← Back to Review</a>
+</form>
+
+{% if exit_code is not none %}
+  <div class="mb">
+    <b>Exit code:</b> {{ exit_code }}<br>
+    <b>Mode:</b> {{ 'Approved Only' if mode != 'all' else 'All Items' }}
+  </div>
+  <pre style="white-space: pre-wrap; background: #f7f7f7; padding: 12px; border: 1px solid #ddd; border-radius: 6px; max-height: 60vh; overflow:auto;">
+{{ logs }}
+  </pre>
+{% else %}
+  <p class="muted">Click one of the buttons above to run <code>run_pipeline.py</code> and sync items to Jira.</p>
+{% endif %}
+{% endblock %}

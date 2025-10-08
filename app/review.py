@@ -1,7 +1,9 @@
-# app/review.py
 from __future__ import annotations
-import sqlite3, datetime, os
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+import os
+import sqlite3
+import subprocess, sys
+import datetime
+from flask import Blueprint, render_template, request, redirect, url_for, flash, abort
 
 bp = Blueprint("review", __name__, url_prefix="/review")
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
@@ -13,6 +15,7 @@ def get_db():
 
 @bp.route("/")
 def index():
+    """List requirements, with simple filters."""
     status = request.args.get("status", "draft")  # all|draft|approved
     q = request.args.get("q", "").strip()
 
@@ -48,6 +51,7 @@ def index():
 
 @bp.route("/<req_id>")
 def detail(req_id: str):
+    """Detail page for a requirement."""
     conn = get_db()
     req = conn.execute("""
         SELECT id, title, COALESCE(description,'') AS description,
@@ -108,3 +112,42 @@ def bulk():
     conn.commit(); conn.close()
     flash(msg, "success")
     return redirect(url_for("review.index"))
+
+# ---------- SYNC TO JIRA (Button) ----------
+
+def _run_pipeline(jira_all: bool = False) -> tuple[int, str]:
+    """
+    Run run_pipeline.py and capture logs. If jira_all=False, it will honor
+    JIRA_APPROVED_ONLY=1 and sync only approved requirements.
+    """
+    cmd = [sys.executable, "run_pipeline.py"]
+    if jira_all:
+        cmd.append("--jira-all")
+    # Inherit env (uses your JIRA_* vars)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    code = proc.returncode
+    # Merge stdout/stderr for display
+    out = proc.stdout + ("\n--- STDERR ---\n" + proc.stderr if proc.stderr else "")
+    return code, out
+
+@bp.route("/sync", methods=["GET", "POST"])
+def sync():
+    """
+    GET: Show a page with two buttons:
+         - "Sync Approved" (default)
+         - "Sync ALL" (admin/testing)
+    POST: Run the pipeline and show logs.
+    Guarded by env JIRA_UI_SYNC (default '1' to allow).
+    """
+    if os.getenv("JIRA_UI_SYNC", "1") != "1":
+        abort(403, description="UI-triggered sync is disabled (JIRA_UI_SYNC != 1).")
+
+    if request.method == "POST":
+        mode = request.form.get("mode", "approved")  # 'approved' or 'all'
+        jira_all = (mode == "all")
+        code, logs = _run_pipeline(jira_all=jira_all)
+        title = "Jira Sync – Approved Only" if not jira_all else "Jira Sync – ALL Items"
+        return render_template("review/sync.html", title=title, exit_code=code, logs=logs, mode=mode)
+
+    # GET
+    return render_template("review/sync.html", title="Jira Sync", exit_code=None, logs=None, mode="approved")

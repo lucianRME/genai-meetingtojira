@@ -12,6 +12,13 @@
   <button type="submit">Filter</button>
 </form>
 
+<!-- Sync buttons -->
+<form method="post" action="{{ url_for('review.sync') }}" class="mb">
+  <button name="mode" value="approved">🔄 Sync Approved to Jira</button>
+  <button name="mode" value="all">⚠️ Sync ALL to Jira</button>
+  <span class="muted">Uses your JIRA_* env vars in Codespaces.</span>
+</form>
+
 <form method="post" action="{{ url_for('review.bulk') }}">
   <div class="mb">
     <button name="action" value="approve">Approve selected</button>
