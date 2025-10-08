@@ -1,0 +1,41 @@
+{% extends "review/layout.html" %}
+{% block body %}
+<h1>Requirement {{ req.id }}</h1>
+
+<form method="post">
+  <div class="mb">
+    <label>Title</label><br>
+    <input type="text" name="title" value="{{ req.title }}" style="width: 100%">
+  </div>
+
+  <div class="mb">
+    <label>Description</label><br>
+    <textarea name="description" rows="8" style="width: 100%">{{ req.description }}</textarea>
+  </div>
+
+  <div class="mb">
+    <label>Acceptance Criteria</label><br>
+    <textarea name="criteria" rows="8" style="width: 100%">{{ req.criteria }}</textarea>
+  </div>
+
+  <div class="mb">
+    <label>Reviewer</label><br>
+    <input type="text" name="reviewer" value="{{ req.reviewer }}" placeholder="Your name">
+  </div>
+
+  <div class="mb">
+    <label>Review notes</label><br>
+    <textarea name="review_notes" rows="4" style="width: 100%">{{ req.review_notes }}</textarea>
+  </div>
+
+  <div class="mb">
+    <label><input type="checkbox" name="approved" {% if req.approved %}checked{% endif %}> Approved</label>
+    <span class="muted">Status: {{ req.status }} | Jira: {{ req.jira_key or '—' }} | Reviewed at: {{ req.reviewed_at or '—' }}</span>
+  </div>
+
+  <div class="mb">
+    <button>Save</button>
+    <a href="{{ url_for('review.index') }}">Back</a>
+  </div>
+</form>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends "review/layout.html" %}
+{% block body %}
+<h1 class="mb">Requirements Review</h1>
+
+<form method="get" class="mb">
+  <input type="text" name="q" placeholder="Search..." value="{{ q or '' }}">
+  <select name="status">
+    <option value="all" {{ 'selected' if status=='all' else '' }}>All</option>
+    <option value="draft" {{ 'selected' if status=='draft' else '' }}>Draft</option>
+    <option value="approved" {{ 'selected' if status=='approved' else '' }}>Approved</option>
+  </select>
+  <button type="submit">Filter</button>
+</form>
+
+<form method="post" action="{{ url_for('review.bulk') }}">
+  <div class="mb">
+    <button name="action" value="approve">Approve selected</button>
+    <button name="action" value="unapprove">Unapprove selected</button>
+  </div>
+  <table class="grid">
+    <thead><tr>
+      <th></th><th>ID</th><th>Title</th><th>Status</th><th>Approved</th><th>Jira</th><th></th>
+    </tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><input type="checkbox" name="ids" value="{{ r.id }}"></td>
+        <td>{{ r.id }}</td>
+        <td>{{ r.title }}</td>
+        <td>{{ r.status }}</td>
+        <td>{{ 'Yes' if r.approved else 'No' }}</td>
+        <td>{{ r.jira_key or '—' }}</td>
+        <td><a href="{{ url_for('review.detail', req_id=r.id) }}">Open</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</form>
+{% endblock %}

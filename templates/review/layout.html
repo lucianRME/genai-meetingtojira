@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>FlowMind – Review</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; }
+    .mb { margin-bottom: 16px; }
+    .grid { border-collapse: collapse; width: 100%; }
+    .grid th, .grid td { border: 1px solid #ddd; padding: 8px; }
+    .grid th { background: #f2f2f2; text-align: left; }
+    .muted { color: #666; font-size: 12px; }
+    .flash { padding: 8px; background: #fffbcc; margin-bottom: 12px; border: 1px solid #e6db55; }
+    a { text-decoration: none; }
+  </style>
+</head>
+<body>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for cat, msg in messages %}
+        <div class="flash">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+
+  {% block body %}{% endblock %}
+</body>
+</html>
