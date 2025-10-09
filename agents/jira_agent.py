@@ -1,7 +1,7 @@
 """
 agents/jira_agent.py
 
-Enhanced Jira synchronization for FlowMind:
+Enhanced Jira synchronization for Synapse:
 - Reads requirements and test cases from repo.db
 - Creates/updates Jira issues deterministically using labels (and stored jira_key)
 - Writes Jira keys back into the DB
@@ -236,7 +236,7 @@ def create_from_db(db_path: str):
             content += [_adf_h("Acceptance Criteria", 3), _adf_p(criteria)]
         if not (description or criteria):
             content.append(_adf_p("No detailed description or criteria provided."))
-        content += [_adf_h("Sync", 3), _adf_p("Auto-synced by FlowMind pipeline.")]
+        content += [_adf_h("Sync", 3), _adf_p("Auto-synced by Synapse pipeline.")]
         desc = _adf_doc(*content)
 
         try:
@@ -317,7 +317,7 @@ def create_from_db(db_path: str):
             _adf_h("Gherkin", 3),
             _adf_code(gherkin or "", language="gherkin"),
             _adf_h("Sync", 3),
-            _adf_p("Auto-synced by FlowMind pipeline (BDD/Gherkin)."),
+            _adf_p("Auto-synced by Synapse pipeline (BDD/Gherkin)."),
         ]
         desc = _adf_doc(*content)
 

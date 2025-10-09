@@ -2,7 +2,7 @@
 """
 run_pipeline.py
 
-Runs the FlowMind GenAI pipeline (Requirements → BDD → Persist → Jira).
+Runs the Synapse GenAI pipeline (Requirements → BDD → Persist → Jira).
 
 Modes:
 - Default: "agentic" (multi-agent controller via agents/agentic_controller.py)
@@ -125,7 +125,7 @@ def maybe_sync_jira(approved_only: bool):
 # MAIN ENTRY POINT
 # -----------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(description="Run the FlowMind GenAI pipeline.")
+    parser = argparse.ArgumentParser(description="Run the Synapse GenAI pipeline.")
     parser.add_argument("--mode", choices=["agentic", "classic"], default=DEFAULT_MODE,
                         help="Execution mode (default from PIPELINE_MODE env, default=agentic).")
     parser.add_argument("--transcript", default=TRANSCRIPT_FILE,

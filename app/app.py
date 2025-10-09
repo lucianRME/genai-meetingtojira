@@ -13,7 +13,7 @@ TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>FlowMind – Requirements Review</title>
+    <title>Synapse – Requirements Review</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 40px; background: #fafafa; }
       h1 { color: #333; }

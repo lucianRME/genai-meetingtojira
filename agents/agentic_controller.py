@@ -1,6 +1,6 @@
 # agents/agentic_controller.py
 """
-Agentic controller for FlowMind – orchestrates the pipeline steps (ingest → reqs → review → tests → persist).
+Agentic controller for Synapse – orchestrates the pipeline steps (ingest → reqs → review → tests → persist).
 Use from run_pipeline.py as:
     from agents.agentic_controller import Controller as AgenticController
 """
