@@ -2,10 +2,10 @@
 
 🧠 Microsoft Teams Transcript → Structured Requirements + Test Cases → Review → Jira Sync
 
+![Tests](https://github.com/lucianRME/genai-meetingtojira/actions/workflows/tests.yml/badge.svg)
+
 Synapse is an agentic AI proof-of-concept that automates requirement and test case generation from real meeting transcripts.
 It demonstrates how GenAI can integrate across Agile delivery stages — from transcript ingestion to Jira synchronization — using modular multi-agent orchestration.
-
-![Tests](https://github.com/lucianRME/genai-meetingtojira/actions/workflows/tests.yml/badge.svg)
 
 🌐 End-to-End Flow
 Stage	Agent	Description
