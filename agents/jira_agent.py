@@ -12,11 +12,14 @@ Enhanced Jira synchronization for Synapse:
 New:
 - Optional Memory-aware, LLM-assisted summaries (titles) using infra.memory.prompt_hydrator
   Toggle with env: JIRA_USE_LLM_TITLES (default '1')
+- Idempotent content-hash guard to avoid duplicates/pointless updates
+  Toggle with env: JIRA_IDEMPOTENT_SKIP_WITH_HASH (default '1')
 """
 
 import os
 import re
 import sqlite3
+import hashlib
 from typing import Dict, Any, Optional, Tuple
 import requests
 
@@ -49,6 +52,11 @@ def _req_label(req_id: str) -> str:
 
 def _tc_label(req_id: str, scenario_type: str) -> str:
     return f"tc-{(req_id or '').lower()}-{_slug(scenario_type)}"
+
+# NEW: stable content hash
+def _hash_content(*parts: str) -> str:
+    text = "\n".join(p or "" for p in parts)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
 
 # ---------------- Jira client ----------------
@@ -135,7 +143,6 @@ class JiraAgent:
         try:
             self._request("POST", "/rest/api/3/issueLink", json=payload)
         except requests.HTTPError as e:
-            # Common duplicate case returns 400; safe to ignore
             status = getattr(e.response, "status_code", None)
             if status == 400:
                 print(f"ℹ️ Link {inward_key}—{link_type}—{outward_key} may already exist; skipping.")
@@ -147,10 +154,6 @@ class JiraAgent:
 
 def _maybe_llm_summary_for_requirement(conn: sqlite3.Connection, project_id: str, session_id: Optional[str],
                                        req_id: str, title: str, description: str, criteria: str) -> Optional[str]:
-    """
-    Use Memory to craft a concise, action-oriented Story summary.
-    Returns None on any failure so caller can fallback.
-    """
     if os.getenv("JIRA_USE_LLM_TITLES", "1") != "1":
         return None
     try:
@@ -174,7 +177,6 @@ def _maybe_llm_summary_for_requirement(conn: sqlite3.Connection, project_id: str
             model=MODEL, temperature=max(0.0, min(0.4, TEMPERATURE))
         )
         s = (resp.choices[0].message.content or "").strip().splitlines()[0]
-        # hard trim
         return s[:110] if s else None
     except Exception as e:
         print(f"ℹ️ LLM summary skipped for {req_id}: {e}")
@@ -182,10 +184,6 @@ def _maybe_llm_summary_for_requirement(conn: sqlite3.Connection, project_id: str
 
 def _maybe_llm_summary_for_test(conn: sqlite3.Connection, project_id: str, session_id: Optional[str],
                                 req_id: str, scenario_type: str) -> Optional[str]:
-    """
-    Use Memory to craft a concise Task title for a test case.
-    Returns None on failure so caller can fallback.
-    """
     if os.getenv("JIRA_USE_LLM_TITLES", "1") != "1":
         return None
     try:
@@ -231,6 +229,7 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
     approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
     link_type = os.getenv("JIRA_LINK_TYPE", "Relates")
     project_id = project_id or os.getenv("PROJECT_ID", "primark")
+    IDEMPOTENT_SKIP = os.getenv("JIRA_IDEMPOTENT_SKIP_WITH_HASH", "1") == "1"  # NEW
 
     missing = [k for k, v in {
         "JIRA_URL": jira_url,
@@ -280,6 +279,18 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
         llm_summary = _maybe_llm_summary_for_requirement(conn, project_id, session_id, req_id, title or "", description, criteria)
         summary = llm_summary or default_summary
 
+        # --- NEW: idempotency guard (requirements)
+        req_hash_key = f"jira.hash.req.{req_id}"
+        new_hash = _hash_content(title or "", description or "", criteria or "")
+        if IDEMPOTENT_SKIP:
+            row = c.execute(
+                "SELECT value FROM memory_project WHERE project_id=? AND key=?",
+                (project_id, req_hash_key)
+            ).fetchone()
+            if row and row[0] == new_hash and (jira_key or "").strip():
+                print(f"⏩ Skip unchanged requirement {req_id} (content hash match).")
+                continue
+
         content = [
             _adf_h("Requirement", 2),
             _adf_p(f"ID: {req_id}"),
@@ -306,6 +317,12 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
             if not jira_key or jira_key != key:
                 c.execute("UPDATE requirements SET jira_key=? WHERE rowid=?", (key, rid))
                 conn.commit()
+            # NEW: persist hash for idempotency
+            c.execute(
+                "INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES(?,?,?)",
+                (project_id, req_hash_key, new_hash)
+            )
+            conn.commit()
         except requests.HTTPError as e:
             print(f"❌ Failed requirement {req_id} ({label}): {e}")
 
@@ -369,6 +386,19 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
         llm_summary = _maybe_llm_summary_for_test(conn, project_id, session_id, req_id, scenario_type)
         summary = llm_summary or default_summary
 
+        # --- NEW: idempotency guard (test cases)
+        tc_hash_key = f"jira.hash.tc.{req_id}:{scenario_type}"
+        new_tc_hash = _hash_content(req_id or "", scenario_type or "", gherkin or "")
+        if IDEMPOTENT_SKIP:
+            row = c.execute(
+                "SELECT value FROM memory_project WHERE project_id=? AND key=?",
+                (project_id, tc_hash_key)
+            ).fetchone()
+            if row and row[0] == new_tc_hash and (jira_key or "").strip():
+                print(f"⏩ Skip unchanged test {req_id}::{scenario_type} (content hash match).")
+                # minimal behavior: skip both upsert & linking to avoid duplicates
+                continue
+
         content = [
             _adf_h("Test Case", 2),
             _adf_p(f"Requirement: {req_id}"),
@@ -392,7 +422,6 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
             if not jira_key or jira_key != key:
                 c.execute("UPDATE test_cases SET jira_key=? WHERE rowid=?", (key, tid))
                 conn.commit()
-
             # Link to parent Story if we have a parent key (or can find one in parent_map)
             parent = parent_key or parent_map.get(req_id, "")
             if parent:
@@ -403,6 +432,13 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
                     print(f"ℹ️ Linking skipped for test {key} → story {parent}: {e}")
             else:
                 print(f"ℹ️ No parent Jira key found for requirement {req_id}; link skipped.")
+
+            # NEW: persist test hash for idempotency
+            c.execute(
+                "INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES(?,?,?)",
+                (project_id, tc_hash_key, new_tc_hash)
+            )
+            conn.commit()
 
         except requests.HTTPError as e:
             print(f"❌ Failed test {ext} ({label}): {e}")
