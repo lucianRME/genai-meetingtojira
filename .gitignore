@@ -1,0 +1,23 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local env files
+.env
+*.env
+
+# Runtime artefacts
+repo.db
+output.json
+output/*.csv
+output/*.json
+
+# IDE / editor
+.vscode/
+.settings/
+*.code-workspace
+
+# System junk
+.DS_Store
+Thumbs.db
