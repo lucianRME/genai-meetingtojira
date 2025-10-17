@@ -1,27 +1,23 @@
 # app/app.py
 from __future__ import annotations
 
-# ⬇️ Add this BEFORE importing agents/review
+# Ensure repo root on path
 import os, sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import sqlite3
+import subprocess
+from pathlib import Path
 from flask import (
-    Flask,
-    render_template_string,
-    redirect,
-    request,
-    flash,
-    get_flashed_messages,
-    make_response,
-    jsonify,
+    Flask, render_template_string, redirect, request, flash,
+    get_flashed_messages, make_response, jsonify, url_for
 )
 
-# Reuse your Jira sync logic and review blueprint
+# Reuse Jira and review UI
 from agents.jira_agent import create_from_db
 from review import bp as review_bp
 
-# Import session helpers from the pipeline so UI and pipeline share the same logic
+# Import session helpers from pipeline
 from run_pipeline import (
     get_conn as rp_get_conn,
     ensure_session as rp_ensure_session,
@@ -34,7 +30,7 @@ DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev")
 
-# --- Run memory/session migration once at startup -----------------------------
+# --- One-time memory migration ------------------------------------------------
 def run_memory_migration_once():
     ddl_path = os.path.join("infra", "memory.sql")
     if os.path.exists(ddl_path):
@@ -43,7 +39,6 @@ def run_memory_migration_once():
             conn.executescript(f.read())
         conn.commit()
         conn.close()
-
 run_memory_migration_once()
 
 # --- Register blueprint -------------------------------------------------------
@@ -66,7 +61,8 @@ TEMPLATE = """
     button { background:#0078d7; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; }
     button:hover { background:#005ea3; }
     .approved { background:#e8ffe8; border-color:#b2dfb2; }
-    .sync-btn { margin:20px 0; background:#4CAF50; }
+    .sync-btn { margin:10px 8px 0 0; background:#4CAF50; }
+    .resume-btn { margin:10px 0 0 0; background:#6c5ce7; }
     .banner { padding:10px; border-radius:6px; margin-bottom:15px; }
     .success { background:#e8ffe8; border:1px solid #b2dfb2; color:#2b662b; }
     .error { background:#ffe8e8; border:1px solid #dfb2b2; color:#a33; }
@@ -99,6 +95,14 @@ TEMPLATE = """
           <div>Project: <b>{{ project_id }}</b></div>
           <div>Updated: {{ snapshot.updated_at or '—' }}</div>
         </div>
+
+        <form action="/sync" method="post" style="display:inline-block">
+          <button type="submit" class="sync-btn">🔄 Sync Approved to Jira</button>
+        </form>
+        <form action="/run" method="post" style="display:inline-block">
+          <button type="submit" class="resume-btn">▶️ Resume Last Run</button>
+        </form>
+
         <h4>Recent actions</h4>
         {% if snapshot.rolling_summary %}
           <pre>{{ snapshot.rolling_summary }}</pre>
@@ -113,21 +117,27 @@ TEMPLATE = """
           </ul>
         {% endif %}
       </div>
+
       <div class="col">
         <h3>Transcript summary</h3>
         {% if snapshot.last_transcript_summary %}
-          <pre>{{ snapshot.last_transcript_summary[:1200] }}</pre>
-          {% if snapshot.last_transcript_summary|length > 1200 %}
+          <pre>{{ snapshot.last_transcript_summary[:2000] }}</pre>
+          {% if snapshot.last_transcript_summary|length > 2000 %}
             <div class="small">…truncated</div>
           {% endif %}
         {% else %}
           <div class="small">No transcript summary captured yet.</div>
         {% endif %}
+
+        {% if transcript_preview %}
+          <h4>Transcript (raw)</h4>
+          <pre>{{ transcript_preview }}</pre>
+          {% if transcript_truncated %}
+            <div class="small">…truncated</div>
+          {% endif %}
+        {% endif %}
       </div>
     </div>
-    <form action="/sync" method="post">
-      <button type="submit" class="sync-btn">🔄 Sync Approved to Jira</button>
-    </form>
   </div>
 
   <!-- Requirements List -->
@@ -157,22 +167,43 @@ def _get_or_create_session(conn_sqlite):
     sid = request.cookies.get("session_id")
     if not sid:
         sid = rp_ensure_session(conn_sqlite, PROJECT_ID, None)
-    # Ensure a row exists even if cookie was stale
     else:
-        rp_ensure_session(conn_sqlite, PROJECT_ID, sid)
+        rp_ensure_session(conn_sqlite, PROJECT_ID, sid)  # ensure row exists
     snap = get_session_snapshot(conn_sqlite, sid) or {}
     return sid, snap
 
+def _get_transcript_preview(sid: str, limit: int = 6000) -> tuple[str, bool]:
+    """Read the last transcript path from memory_session and return a safe preview."""
+    conn = sqlite3.connect(DB_PATH); conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT value FROM memory_session WHERE session_id=? AND key='last_transcript_path'",
+        (sid,)
+    ).fetchone()
+    conn.close()
+    if not row or not row["value"]:
+        return "", False
+    path = row["value"]
+    try:
+        raw = Path(path).read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return "", False
+    text = raw.replace("\r\n", "\n")
+    truncated = len(text) > limit
+    return (text[:limit], truncated)
+
 @app.route("/")
 def home():
-    # Use the same connection for both: session snapshot + requirements
     conn = rp_get_conn()
     sid, snap = _get_or_create_session(conn)
 
+    # Requirements
     cur = conn.cursor()
     cur.execute("SELECT id,title,description,criteria,priority,epic,approved FROM requirements ORDER BY id")
     reqs = cur.fetchall()
     conn.close()
+
+    # Transcript preview
+    preview, truncated = _get_transcript_preview(sid)
 
     html = render_template_string(
         TEMPLATE,
@@ -180,22 +211,45 @@ def home():
         project_id=PROJECT_ID,
         session_id=sid,
         snapshot=snap,
+        transcript_preview=preview,
+        transcript_truncated=truncated,
         get_flashed_messages=get_flashed_messages,
     )
     resp = make_response(html)
-    # Persist cookie for a year (rehydrates context on reload)
     resp.set_cookie("session_id", sid, max_age=60*60*24*365, samesite="Lax")
     return resp
 
 @app.get("/api/session")
 def api_session():
-    """Lightweight JSON for the front-end to rehydrate session context."""
+    """JSON session context (handy for front-end polling later)."""
     conn = rp_get_conn()
     sid, snap = _get_or_create_session(conn)
     conn.close()
     resp = make_response(jsonify({"ok": True, "session_id": sid, "session": snap, "project_id": PROJECT_ID}))
     resp.set_cookie("session_id", sid, max_age=60*60*24*365, samesite="Lax")
     return resp
+
+@app.route("/run", methods=["POST"])
+def resume_last_run():
+    """Resume the agentic pipeline using the current cookie session_id."""
+    sid = request.cookies.get("session_id")
+    if not sid:
+        flash("No session_id cookie present. Refresh the page and try again.", "error")
+        return redirect(url_for("home"))
+
+    cmd = [sys.executable, "run_pipeline.py", "--session", sid]
+    # If you want to force-include a transcript every time from env:
+    transcript = os.getenv("TRANSCRIPT_FILE")
+    if transcript:
+        cmd += ["--transcript", transcript]
+
+    try:
+        subprocess.run(cmd, check=True)
+        flash("✅ Agentic pipeline completed (resumed this session).", "success")
+    except subprocess.CalledProcessError as e:
+        flash(f"❌ Pipeline failed: {e}", "error")
+
+    return redirect(url_for("home"))
 
 @app.route("/approve/<req_id>", methods=["POST"])
 def approve(req_id):
@@ -204,7 +258,7 @@ def approve(req_id):
     cur.execute("UPDATE requirements SET approved=1 WHERE id=?", (req_id,))
     conn.commit(); conn.close()
     flash(f"Requirement {req_id} approved ✅", "success")
-    return redirect("/")
+    return redirect(url_for("home"))
 
 @app.route("/unapprove/<req_id>", methods=["POST"])
 def unapprove(req_id):
@@ -213,7 +267,7 @@ def unapprove(req_id):
     cur.execute("UPDATE requirements SET approved=0 WHERE id=?", (req_id,))
     conn.commit(); conn.close()
     flash(f"Requirement {req_id} unapproved ❌", "error")
-    return redirect("/")
+    return redirect(url_for("home"))
 
 @app.route("/sync", methods=["POST"])
 def sync_to_jira():
@@ -222,8 +276,12 @@ def sync_to_jira():
         flash("✅ Jira sync complete — approved items pushed successfully.", "success")
     except Exception as e:
         flash(f"❌ Jira sync failed: {e}", "error")
-    return redirect("/")
+    return redirect(url_for("home"))
+
+@app.get("/health")
+def health():
+    return "ok", 200
 
 if __name__ == "__main__":
-    # Run on 0.0.0.0 so Codespaces/containers can expose the port
+    # 0.0.0.0 so Codespaces/containers expose the port
     app.run(host="0.0.0.0", port=5000, debug=True)

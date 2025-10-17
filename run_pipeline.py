@@ -32,7 +32,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-import re  # ← added
+import re  # for transcript cleanup
 
 # --- Ensure repo root is on sys.path ---
 sys.path.insert(0, os.path.dirname(__file__))
@@ -162,14 +162,35 @@ def get_compact_context(conn: sqlite3.Connection, session_id: str, max_chars: in
 
 # --- Minimal local transcript mini-summarizer (fast, no LLM call) ------------
 def _quick_summarize(text: str, max_len: int = 1200) -> str:
+    """
+    Return a compact summary no longer than max_len characters.
+    Keeps head and tail around an ellipsis, while guaranteeing length.
+    """
     if not text:
         return ""
-    text = " ".join(text.split())  # squash whitespace
+    # collapse whitespace
+    text = " ".join(text.split())
+
     if len(text) <= max_len:
         return text
-    head = text[: max_len - 300]
-    tail = text[-300:]
-    return head + " … " + tail
+
+    # Very small budgets: simple hard cut with ellipsis
+    if max_len <= 10:
+        return (text[: max(0, max_len - 1)] + "…") if max_len > 0 else ""
+
+    ell = " … "
+    avail = max_len - len(ell)
+    if avail <= 0:
+        # Not enough room for ellipsis + content; fall back to truncation
+        return text[: max_len]
+
+    # Split the available space between head and tail (60/40 split)
+    head_len = int(avail * 0.6)
+    tail_len = avail - head_len
+
+    head = text[:head_len] if head_len > 0 else ""
+    tail = text[-tail_len:] if tail_len > 0 else ""
+    return f"{head}{ell}{tail}" if tail else (text[:avail] + "…")
 
 # --- File-based fallback: read .vtt/.txt if agent didn't return text ----------
 def _read_transcript_text(path: str | None) -> str:
@@ -269,10 +290,16 @@ def run_agentic(transcript_path: str | None, project_id: str, session_id: str, c
 
     # Capture transcript summary (prefer agent output, else read from file)
     tx_text = state_after_ingest.get("transcript_text") or state_after_ingest.get("clean_text") or ""
+    candidate = state_after_ingest.get("resolved_transcript_path") or transcript_path
     if not tx_text:
-        # try a file-based fallback (resolved path from agent if present, else CLI/env)
-        candidate = state_after_ingest.get("resolved_transcript_path") or transcript_path
         tx_text = _read_transcript_text(candidate)
+
+    # store the path we used (for UI preview)
+    if candidate:
+        try:
+            session_set(conn, session_id, "last_transcript_path", str(candidate))
+        except Exception:
+            pass
 
     if tx_text:
         mini = _quick_summarize(tx_text)
@@ -378,6 +405,8 @@ def main():
                         help="Execution mode (default from PIPELINE_MODE env, default=agentic).")
     parser.add_argument("--transcript", default=TRANSCRIPT_FILE,
                         help="Optional path to .vtt transcript (overrides TRANSCRIPT_FILE env).")
+    parser.add_argument("--session", dest="session_id", default=None,
+                        help="Reuse an existing session_id for continuity in the UI.")
     parser.add_argument("--no-export", action="store_true",
                         help="Skip CSV export step.")
     parser.add_argument("--no-jira", action="store_true",
@@ -389,9 +418,9 @@ def main():
     parser.set_defaults(jira_approved_only=None)
     args = parser.parse_args()
 
-    # open DB / ensure session
+    # open DB / ensure session (reuse from CLI if provided)
     conn = get_conn()
-    session_id = ensure_session(conn, PROJECT_ID, incoming_session_id=None)
+    session_id = ensure_session(conn, PROJECT_ID, incoming_session_id=args.session_id)
 
     # Choose mode
     result: Dict[str, Any] = {}

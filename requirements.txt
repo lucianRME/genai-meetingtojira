@@ -1,17 +1,25 @@
-# Core LLM client
+# ==========================
+# Synapse GenAI Requirements
+# ==========================
+
+# --- Core LLM + OpenAI client ---
 openai>=1.30.0,<2
 
-# Env config
+# --- Environment / Config ---
 python-dotenv>=1.0.0,<2
 
-# Exports & data handling
+# --- Data Handling / CSV Export ---
 pandas>=2.0,<3
 
-# Optional UI (your app.py)
+# --- Web UI ---
 flask>=3.0,<4
 
-# SQLite helpers (you use the stdlib sqlite3; this is optional utility)
+# --- SQLite / Utilities ---
 sqlite-utils>=3.35,<4
 
-# Jira & HTTP integrations
-requests
+# --- HTTP / Integrations (Jira, etc.) ---
+requests>=2.31,<3
+
+# --- Testing (optional but recommended) ---
+pytest>=7.4,<9
+pytest-cov>=4.1,<6
