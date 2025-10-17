@@ -1,0 +1,16 @@
+IssueKey,Summary,Description,IssueType,Priority,EpicLink,Status,AcceptanceCriteria
+REQ-005,Regression Testing for Existing Login Flow,Conduct regression tests to ensure that the existing login flow is not affected by the new password reset feature.,Story,High,Password Reset Feature,Draft,"Existing login functionality works as expected post-implementation.
+No new errors are introduced in the login process.
+All existing login test cases pass successfully."
+REQ-001,Email OTP for Password Reset,Implement a feature that allows users to reset their password using a one-time code sent via email.,Story,High,Password Reset Enhancement,Approved,"User receives an OTP via email upon requesting a password reset.
+OTP expires 10 minutes after being sent.
+User can successfully reset password using a valid OTP."
+REQ-002,OTP Expiration Handling,Ensure that the OTP expires 10 minutes after being sent to the user.,Story,High,Password Reset Enhancement,Approved,"Expired OTP results in an error message when used.
+System does not allow password reset with an expired OTP.
+User can request a new OTP after expiration."
+REQ-003,Rate Limiting for OTP Requests,Implement rate limiting to prevent abuse of the OTP request feature.,Story,Medium,Security Enhancements,Draft,"User can request a maximum of 3 OTPs per hour.
+Exceeding the limit results in an error message.
+Rate limit resets after one hour."
+REQ-004,Audit Event for Successful Password Reset,Log an audit event whenever a password is successfully reset.,Story,Medium,Security Enhancements,Draft,"Audit event is logged with timestamp and user ID.
+Audit event is accessible in system logs.
+Audit event does not contain sensitive information."

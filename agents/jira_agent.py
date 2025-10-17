@@ -9,36 +9,9 @@ Enhanced Jira synchronization for Synapse:
 - Includes Gherkin in Tasks (code block)
 - Links each Test Task to its parent Requirement Story using issueLink
 
-SQLite schema expected:
-  requirements(
-      id TEXT PRIMARY KEY,
-      title TEXT,
-      description TEXT,
-      criteria TEXT,
-      priority TEXT,
-      epic TEXT,
-      approved INTEGER DEFAULT 0,
-      jira_key TEXT
-  )
-
-  test_cases(
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      requirement_id TEXT,
-      scenario_type TEXT,
-      gherkin TEXT,
-      tags TEXT,
-      jira_key TEXT
-  )
-
-Env:
-  JIRA_URL (req)
-  JIRA_USER or JIRA_EMAIL (req)
-  JIRA_API_TOKEN or JIRA_TOKEN (req)
-  JIRA_PROJECT (opt, default 'SCRUM')
-  JIRA_INTEGRATION (opt, '1' default)
-  JIRA_APPROVED_ONLY (opt, '1' default)
-  JIRA_SKIP_SEARCH (opt, '0' default)  # if '1', never JQL search
-  JIRA_LINK_TYPE (opt, default 'Relates')  # link type name used for test→story links
+New:
+- Optional Memory-aware, LLM-assisted summaries (titles) using infra.memory.prompt_hydrator
+  Toggle with env: JIRA_USE_LLM_TITLES (default '1')
 """
 
 import os
@@ -47,6 +20,9 @@ import sqlite3
 from typing import Dict, Any, Optional, Tuple
 import requests
 
+# NEW: memory + LLM helpers
+from infra.memory import prompt_hydrator
+from generate_req_bdd import _chat, MODEL, TEMPERATURE
 
 # ---------------- ADF & helpers ----------------
 
@@ -167,9 +143,83 @@ class JiraAgent:
                 print(f"ℹ️ Issue link creation skipped for {inward_key} ←{link_type}→ {outward_key}: {e}")
 
 
+# ---------------- Memory-aware LLM title helpers (optional) ----------------
+
+def _maybe_llm_summary_for_requirement(conn: sqlite3.Connection, project_id: str, session_id: Optional[str],
+                                       req_id: str, title: str, description: str, criteria: str) -> Optional[str]:
+    """
+    Use Memory to craft a concise, action-oriented Story summary.
+    Returns None on any failure so caller can fallback.
+    """
+    if os.getenv("JIRA_USE_LLM_TITLES", "1") != "1":
+        return None
+    try:
+        base_system = (
+            "You are a Jira Title Assistant. Follow [Memory] settings (tone, jira_story_prefix). "
+            "Write a succinct, action-oriented Story summary (≤ 110 chars). British English."
+        )
+        system_prompt = prompt_hydrator(conn, base_system_prompt=base_system,
+                                        project_id=project_id, session_id=session_id)
+        user = (
+            "Create a Jira Story summary line for this requirement.\n"
+            f"Requirement ID: {req_id}\n"
+            f"Original title: {title}\n"
+            f"Description: {description}\n"
+            f"Acceptance criteria (free text): {criteria}\n"
+            "Output ONLY the summary line, no quotes, no extra text."
+        )
+        resp = _chat(
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": user}],
+            model=MODEL, temperature=max(0.0, min(0.4, TEMPERATURE))
+        )
+        s = (resp.choices[0].message.content or "").strip().splitlines()[0]
+        # hard trim
+        return s[:110] if s else None
+    except Exception as e:
+        print(f"ℹ️ LLM summary skipped for {req_id}: {e}")
+        return None
+
+def _maybe_llm_summary_for_test(conn: sqlite3.Connection, project_id: str, session_id: Optional[str],
+                                req_id: str, scenario_type: str) -> Optional[str]:
+    """
+    Use Memory to craft a concise Task title for a test case.
+    Returns None on failure so caller can fallback.
+    """
+    if os.getenv("JIRA_USE_LLM_TITLES", "1") != "1":
+        return None
+    try:
+        base_system = (
+            "You are a Jira Title Assistant. Follow [Memory] settings. "
+            "Write a succinct Task title for a test case (≤ 110 chars). British English."
+        )
+        system_prompt = prompt_hydrator(conn, base_system_prompt=base_system,
+                                        project_id=project_id, session_id=session_id)
+        user = (
+            "Create a Jira Task title for a BDD test.\n"
+            f"Requirement ID: {req_id}\n"
+            f"Scenario type: {scenario_type}\n"
+            "Output ONLY the title line."
+        )
+        resp = _chat(
+            [{"role": "system", "content": system_prompt},
+             {"role": "user", "content": user}],
+            model=MODEL, temperature=0.2
+        )
+        s = (resp.choices[0].message.content or "").strip().splitlines()[0]
+        return s[:110] if s else None
+    except Exception as e:
+        print(f"ℹ️ LLM test title skipped for {req_id}::{scenario_type}: {e}")
+        return None
+
+
 # ---------------- Main sync ----------------
 
-def create_from_db(db_path: str):
+def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id: Optional[str] = None):
+    """
+    Sync requirements & test cases from SQLite to Jira.
+    project_id/session_id are optional (used for Memory). If omitted, project_id falls back to env PROJECT_ID.
+    """
     if os.getenv("JIRA_INTEGRATION", "1") != "1":
         print("ℹ️ JIRA_INTEGRATION=0 → skipping Jira sync.")
         return
@@ -180,6 +230,7 @@ def create_from_db(db_path: str):
     jira_project = os.environ.get("JIRA_PROJECT", "SCRUM")
     approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
     link_type = os.getenv("JIRA_LINK_TYPE", "Relates")
+    project_id = project_id or os.getenv("PROJECT_ID", "primark")
 
     missing = [k for k, v in {
         "JIRA_URL": jira_url,
@@ -215,7 +266,6 @@ def create_from_db(db_path: str):
         """)
     req_rows = c.fetchall()
 
-    # ---- Sync requirements first (so their jira_key is persisted) ----
     print(f"📤 Syncing {len(req_rows)} requirements to Jira…")
     for rid, req_id, title, description, criteria, jira_key in req_rows:
         if not req_id:
@@ -223,7 +273,12 @@ def create_from_db(db_path: str):
             continue
 
         label = _req_label(req_id)
-        summary = f"[{req_id}] {title or 'Untitled requirement'}"
+
+        # DEFAULT deterministic summary
+        default_summary = f"[{req_id}] {title or 'Untitled requirement'}"
+        # Try Memory-aware LLM summary (optional)
+        llm_summary = _maybe_llm_summary_for_requirement(conn, project_id, session_id, req_id, title or "", description, criteria)
+        summary = llm_summary or default_summary
 
         content = [
             _adf_h("Requirement", 2),
@@ -254,7 +309,7 @@ def create_from_db(db_path: str):
         except requests.HTTPError as e:
             print(f"❌ Failed requirement {req_id} ({label}): {e}")
 
-    # Refresh a mapping of requirement → jira_key after requirement sync
+    # Refresh mapping requirement → jira_key after requirement sync
     c.execute("SELECT id, COALESCE(jira_key,'') FROM requirements")
     parent_map = dict(c.fetchall())
 
@@ -299,7 +354,6 @@ def create_from_db(db_path: str):
         """)
     tc_rows = c.fetchall()
 
-    # ---- Sync test cases + link to parent requirement ----
     print(f"📤 Syncing {len(tc_rows)} test cases to Jira…")
     for tid, req_id, scenario_type, gherkin, jira_key, parent_key in tc_rows:
         if not (req_id and scenario_type):
@@ -308,7 +362,12 @@ def create_from_db(db_path: str):
 
         label = _tc_label(req_id, scenario_type)
         ext = f"TC::{req_id}::{scenario_type}"
-        summary = f"[{ext}] {scenario_type.capitalize()} for {req_id}"
+
+        # Default deterministic summary
+        default_summary = f"[{ext}] {scenario_type.capitalize()} for {req_id}"
+        # Memory-aware LLM title (optional)
+        llm_summary = _maybe_llm_summary_for_test(conn, project_id, session_id, req_id, scenario_type)
+        summary = llm_summary or default_summary
 
         content = [
             _adf_h("Test Case", 2),

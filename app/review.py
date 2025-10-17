@@ -1,17 +1,54 @@
+# review.py
 from __future__ import annotations
-import os
-import sqlite3
-import subprocess, sys
-import datetime
-from flask import Blueprint, render_template, request, redirect, url_for, flash, abort
+import os, sqlite3, subprocess, sys, datetime, uuid, json
+from flask import Blueprint, render_template, request, redirect, url_for, flash, abort, make_response
+from infra.memory import load_memory  # NEW
 
 bp = Blueprint("review", __name__, url_prefix="/review")
+
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
+PROJECT_ID = os.getenv("PROJECT_ID", "primark")
+
+# ------------------------ DB helpers ------------------------
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+def ensure_session(conn: sqlite3.Connection, project_id: str, incoming_session_id: str | None) -> str:
+    sid = incoming_session_id or str(uuid.uuid4())
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions(session_id, project_id, last_actions_json) VALUES(?,?,?)",
+        (sid, project_id, "[]")
+    )
+    conn.commit()
+    return sid
+
+def _get_actions(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+    row = conn.execute("SELECT last_actions_json FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+    return json.loads((row["last_actions_json"] or "[]") if row else "[]")
+
+def append_action(conn: sqlite3.Connection, session_id: str, action: dict) -> None:
+    """Store a small rolling log of actions (max 20) and keep a compact rolling_summary."""
+    actions = _get_actions(conn, session_id)
+    actions.append({"ts": datetime.datetime.utcnow().isoformat(timespec="seconds") + "Z", **action})
+    actions = actions[-20:]
+    # very compact summary (fits ~1–2k chars easily)
+    lines = []
+    for a in actions[-10:]:
+        who = a.get("actor", "user")
+        kind = a.get("action", "do")
+        item = a.get("item_id") or a.get("mode") or a.get("status") or ""
+        lines.append(f"- {a['ts']} • {who} • {kind} {item}".strip())
+    rolling_summary = "Recent actions:\n" + "\n".join(lines) if lines else ""
+    conn.execute(
+        "UPDATE sessions SET last_actions_json=?, rolling_summary=?, updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
+        (json.dumps(actions), rolling_summary, session_id)
+    )
+    conn.commit()
+
+# ------------------------ Views ------------------------
 
 @bp.route("/")
 def index():
@@ -28,8 +65,7 @@ def index():
              COALESCE(jira_key,'') AS jira_key
       FROM requirements
     """
-    where = []
-    params = []
+    where, params = [], []
 
     if status == "draft":
         where.append("COALESCE(approved,0) = 0")
@@ -45,14 +81,37 @@ def index():
     sql += " ORDER BY id"
 
     conn = get_db()
+    # session + memory
+    incoming_sid = request.cookies.get("session_id")
+    sid = ensure_session(conn, PROJECT_ID, incoming_sid)
+    mem = load_memory(conn, PROJECT_ID, sid)
+
     rows = conn.execute(sql, params).fetchall()
+    recent_actions = _get_actions(conn, sid)
     conn.close()
-    return render_template("review/index.html", rows=rows, status=status, q=q)
+
+    resp = make_response(render_template(
+        "review/index.html",
+        rows=rows,
+        status=status,
+        q=q,
+        project_id=PROJECT_ID,
+        session_id=sid,
+        effective_memory=dict(mem),
+        recent_actions=recent_actions[-10:]
+    ))
+    if incoming_sid != sid:
+        resp.set_cookie("session_id", sid, httponly=True, samesite="Lax")
+    return resp
 
 @bp.route("/<req_id>")
 def detail(req_id: str):
     """Detail page for a requirement."""
     conn = get_db()
+    incoming_sid = request.cookies.get("session_id")
+    sid = ensure_session(conn, PROJECT_ID, incoming_sid)
+    mem = load_memory(conn, PROJECT_ID, sid)
+
     req = conn.execute("""
         SELECT id, title, COALESCE(description,'') AS description,
                COALESCE(criteria,'') AS criteria,
@@ -64,11 +123,28 @@ def detail(req_id: str):
                COALESCE(jira_key,'') AS jira_key
         FROM requirements WHERE id = ?
     """, (req_id,)).fetchone()
+
+    if req:
+        append_action(conn, sid, {"actor": "user", "action": "view_detail", "item_id": req_id})
+
+    recent_actions = _get_actions(conn, sid)
     conn.close()
+
     if not req:
         flash(f"Requirement {req_id} not found", "error")
         return redirect(url_for("review.index"))
-    return render_template("review/detail.html", req=req)
+
+    resp = make_response(render_template(
+        "review/detail.html",
+        req=req,
+        project_id=PROJECT_ID,
+        session_id=sid,
+        effective_memory=dict(mem),
+        recent_actions=recent_actions[-10:]
+    ))
+    if incoming_sid != sid:
+        resp.set_cookie("session_id", sid, httponly=True, samesite="Lax")
+    return resp
 
 @bp.route("/<req_id>", methods=["POST"])
 def update(req_id: str):
@@ -89,7 +165,18 @@ def update(req_id: str):
          WHERE id=?
     """, (title, description, criteria, review_notes,
           approved, status, reviewer, reviewed_at, req_id))
-    conn.commit(); conn.close()
+    conn.commit()
+
+    # log action to session
+    sid = ensure_session(conn, PROJECT_ID, request.cookies.get("session_id"))
+    append_action(conn, sid, {
+        "actor": "user",
+        "action": "update_req",
+        "item_id": req_id,
+        "approved": approved,
+    })
+    conn.close()
+
     flash(f"Saved {req_id} (approved={approved})", "success")
     return redirect(url_for("review.detail", req_id=req_id))
 
@@ -100,6 +187,7 @@ def bulk():
     if not ids:
         flash("No items selected", "error")
         return redirect(url_for("review.index"))
+
     conn = get_db()
     if action == "approve":
         conn.executemany("UPDATE requirements SET approved=1, status='ready' WHERE id=?", [(i,) for i in ids])
@@ -109,7 +197,13 @@ def bulk():
         msg = f"Unapproved {len(ids)} item(s)."
     else:
         msg = "No action performed."
-    conn.commit(); conn.close()
+    conn.commit()
+
+    # log action
+    sid = ensure_session(conn, PROJECT_ID, request.cookies.get("session_id"))
+    append_action(conn, sid, {"actor": "user", "action": f"bulk_{action}", "count": len(ids)})
+    conn.close()
+
     flash(msg, "success")
     return redirect(url_for("review.index"))
 
@@ -123,10 +217,8 @@ def _run_pipeline(jira_all: bool = False) -> tuple[int, str]:
     cmd = [sys.executable, "run_pipeline.py"]
     if jira_all:
         cmd.append("--jira-all")
-    # Inherit env (uses your JIRA_* vars)
     proc = subprocess.run(cmd, capture_output=True, text=True)
     code = proc.returncode
-    # Merge stdout/stderr for display
     out = proc.stdout + ("\n--- STDERR ---\n" + proc.stderr if proc.stderr else "")
     return code, out
 
@@ -142,12 +234,40 @@ def sync():
     if os.getenv("JIRA_UI_SYNC", "1") != "1":
         abort(403, description="UI-triggered sync is disabled (JIRA_UI_SYNC != 1).")
 
+    conn = get_db()
+    sid = ensure_session(conn, PROJECT_ID, request.cookies.get("session_id"))
+
     if request.method == "POST":
         mode = request.form.get("mode", "approved")  # 'approved' or 'all'
         jira_all = (mode == "all")
         code, logs = _run_pipeline(jira_all=jira_all)
+        append_action(conn, sid, {"actor": "user", "action": "jira_sync", "mode": mode, "exit_code": code})
+        mem = load_memory(conn, PROJECT_ID, sid)
+        recent_actions = _get_actions(conn, sid)
+        conn.close()
+
         title = "Jira Sync – Approved Only" if not jira_all else "Jira Sync – ALL Items"
-        return render_template("review/sync.html", title=title, exit_code=code, logs=logs, mode=mode)
+        resp = make_response(render_template(
+            "review/sync.html",
+            title=title, exit_code=code, logs=logs, mode=mode,
+            project_id=PROJECT_ID, session_id=sid,
+            effective_memory=dict(mem), recent_actions=recent_actions[-10:]
+        ))
+        # refresh cookie if newly set
+        if request.cookies.get("session_id") != sid:
+            resp.set_cookie("session_id", sid, httponly=True, samesite="Lax")
+        return resp
 
     # GET
-    return render_template("review/sync.html", title="Jira Sync", exit_code=None, logs=None, mode="approved")
+    mem = load_memory(conn, PROJECT_ID, sid)
+    recent_actions = _get_actions(conn, sid)
+    conn.close()
+    resp = make_response(render_template(
+        "review/sync.html",
+        title="Jira Sync", exit_code=None, logs=None, mode="approved",
+        project_id=PROJECT_ID, session_id=sid,
+        effective_memory=dict(mem), recent_actions=recent_actions[-10:]
+    ))
+    if request.cookies.get("session_id") != sid:
+        resp.set_cookie("session_id", sid, httponly=True, samesite="Lax")
+    return resp

@@ -1,0 +1,16 @@
+IssueKey,Summary,Description,IssueType,Priority,EpicLink,Status,AcceptanceCriteria
+REQ-005,Regression Testing for Existing Login Flow,Conduct regression tests to ensure that the existing login flow is not affected by the new password reset feature.,Story,High,Password Reset Feature,Draft,"Existing login functionality works as expected post-implementation.
+No new errors are introduced in the login process.
+All existing login test cases pass successfully."
+REQ-001,Email One-Time Code for Password Reset,Enable users to reset their passwords using a one-time code sent via email.,Story,High,Password Reset Feature,Approved,"Given a user requests a password reset, When they receive an email, Then the email contains a one-time code.
+Given a user enters a one-time code, When the code is valid, Then the password reset is successful.
+Given a user enters a one-time code, When the code is expired, Then the password reset fails."
+REQ-002,One-Time Code Expiration,The one-time code sent for password reset should expire after 10 minutes.,Story,High,Password Reset Feature,Approved,"Given a one-time code is sent, When 10 minutes have passed, Then the code is expired.
+Given a user enters an expired code, When attempting to reset the password, Then the reset fails.
+Given a user requests a new code, When the previous code is expired, Then a new code is sent."
+REQ-003,Rate Limiting for Password Reset,Limit password reset attempts to a maximum of 3 per hour per user.,Story,Medium,Password Reset Feature,Draft,"Given a user attempts password reset, When they exceed 3 attempts in an hour, Then further attempts are blocked.
+Given a user is blocked, When an hour has passed, Then they can attempt password reset again.
+Given a user is blocked, When they attempt a reset, Then they receive a notification of the block."
+REQ-004,Audit Event for Successful Password Reset,An audit event should be logged when a password is successfully reset.,Story,Medium,Password Reset Feature,Draft,"Given a password reset is successful, When the process completes, Then an audit event is logged.
+Given an audit event is logged, When reviewing logs, Then the event is visible.
+Given a password reset attempt, When it is unsuccessful, Then no audit event is logged."

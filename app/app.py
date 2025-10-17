@@ -1,13 +1,30 @@
+# app.py
 from __future__ import annotations
 import os
 import sqlite3
 from flask import Flask, render_template_string, redirect, request, flash, get_flashed_messages
 from agents.jira_agent import create_from_db  # reuse your Jira sync logic
+from review import bp as review_bp            # NEW: register /review blueprint
 
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "dev")
+
+# --- NEW: run memory/session migration once at startup ------------------------
+def run_memory_migration_once():
+    ddl_path = os.path.join("infra", "memory.sql")
+    if os.path.exists(ddl_path):
+        conn = sqlite3.connect(DB_PATH)
+        with open(ddl_path, "r", encoding="utf-8") as f:
+            conn.executescript(f.read())
+        conn.commit()
+        conn.close()
+
+run_memory_migration_once()
+
+# --- Register blueprint -------------------------------------------------------
+app.register_blueprint(review_bp)  # exposes /review
 
 TEMPLATE = """
 <!DOCTYPE html>
