@@ -20,4 +20,4 @@ output/*.json
 
 # System junk
 .DS_Store
-Thumbs.db
+Thumbs.dblocal_freeze.txt
