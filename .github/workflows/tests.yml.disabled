@@ -1,0 +1,40 @@
+name: tests
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Sanity import (debug-friendly)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import sys, os
+          print("PYTHONPATH:", sys.path[:3])
+          import run_pipeline
+          print("OK: run_pipeline imports")
+          import app.app
+          print("OK: app.app imports")
+          PY
+
+      - name: Run pytest
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          REPO_DB_PATH: ${{ github.workspace }}/repo.db
+          PROJECT_ID: primark
+          JIRA_SYNC_ON_PIPELINE: "0"
+          TRANSCRIPT_FILE: ""
+        run: |
+          pytest --cov=. --cov-report=term-missing -v
