@@ -1,22 +1,32 @@
 # app/app.py
 from __future__ import annotations
 
-# Ensure repo root on path
+# Standard libs
 import os, sys
-
 import sqlite3
 import subprocess
 from pathlib import Path
+
 from flask import (
     Flask, render_template_string, redirect, request, flash,
     get_flashed_messages, make_response, jsonify, url_for
 )
 
-# Reuse Jira and review UI
-from agents.jira_agent import create_from_db
-from app.review import bp as review_bp
+# --- Integrations (graceful on CI) -------------------------------------------
+# Jira: degrade gracefully if the module or its deps are unavailable in CI
+try:
+    from agents.jira_agent import create_from_db  # reuse your Jira sync logic
+except Exception as _jira_err:
+    def create_from_db(_db_path: str) -> None:
+        raise RuntimeError(f"Jira integration unavailable: {_jira_err}")
 
-# Import session helpers from pipeline
+# Review blueprint (absolute import so CI resolves package paths)
+try:
+    from app.review import bp as review_bp            # exposes /review
+except Exception:
+    review_bp = None
+
+# --- Import session helpers from the pipeline --------------------------------
 from run_pipeline import (
     get_conn as rp_get_conn,
     ensure_session as rp_ensure_session,
@@ -38,10 +48,12 @@ def run_memory_migration_once():
             conn.executescript(f.read())
         conn.commit()
         conn.close()
+
 run_memory_migration_once()
 
 # --- Register blueprint -------------------------------------------------------
-app.register_blueprint(review_bp)  # exposes /review
+if review_bp is not None:
+    app.register_blueprint(review_bp)  # exposes /review
 
 TEMPLATE = """
 <!DOCTYPE html>
@@ -237,7 +249,6 @@ def resume_last_run():
         return redirect(url_for("home"))
 
     cmd = [sys.executable, "run_pipeline.py", "--session", sid]
-    # If you want to force-include a transcript every time from env:
     transcript = os.getenv("TRANSCRIPT_FILE")
     if transcript:
         cmd += ["--transcript", transcript]
@@ -274,7 +285,7 @@ def sync_to_jira():
         create_from_db(DB_PATH)
         flash("✅ Jira sync complete — approved items pushed successfully.", "success")
     except Exception as e:
-        flash(f"❌ Jira sync failed: {e}", "error")
+        flash(f"❌ Jira sync failed or unavailable: {e}", "error")
     return redirect(url_for("home"))
 
 @app.get("/health")
