@@ -15,19 +15,11 @@ import os, sys, re, json, sqlite3, time
 from functools import wraps
 from typing import List, Tuple
 from dotenv import load_dotenv
-from openai import OpenAI
 
 # ----------------------------
 # Setup & Configuration
 # ----------------------------
 load_dotenv()
-
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise SystemExit("Missing OPENAI_API_KEY. Put it in .env")
-
-# OpenAI client
-client = OpenAI(api_key=api_key)
 
 # Model config
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -40,6 +32,19 @@ CLASSIFIER_MODEL = os.getenv("SMALLTALK_CLASSIFIER_MODEL", "gpt-4o-mini")
 
 # Files (env overridable)
 TRANSCRIPT_FILE = os.getenv("TRANSCRIPT_FILE", "meeting_transcript.vtt")
+
+# Lazily create the OpenAI client so imports don't require secrets
+_client = None
+def _get_openai_client():
+    global _client
+    if _client is None:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            # Fail only when LLM is actually used
+            raise RuntimeError("OPENAI_API_KEY missing; LLM features unavailable for this run.")
+        from openai import OpenAI
+        _client = OpenAI(api_key=api_key)
+    return _client
 
 # ----------------------------
 # Reliability helpers (retries)
@@ -63,6 +68,7 @@ def with_retries(max_retries=3, backoff=1.5):
 
 @with_retries()
 def _chat(messages, model=MODEL, temperature=TEMPERATURE):
+    client = _get_openai_client()
     return client.chat.completions.create(
         model=model, messages=messages, temperature=temperature
     )
@@ -72,7 +78,8 @@ def _chat(messages, model=MODEL, temperature=TEMPERATURE):
 # ----------------------------
 def read_vtt_lines(path: str) -> List[str]:
     """Return transcript lines with timecodes/headers removed."""
-    text = open(path, "r", encoding="utf-8").read()
+    with open(path, "r", encoding="utf-8") as fh:
+        text = fh.read()
     text = re.sub(r"^WEBVTT\s*\n", "", text, flags=re.MULTILINE)
     text = re.sub(
         r"^\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}\s*$",
@@ -120,6 +127,7 @@ def classify_line_llm(line: str) -> str:
     """
     Returns 'business' or 'small talk' using a lightweight model (if enabled).
     """
+    client = _get_openai_client()
     resp = client.chat.completions.create(
         model=CLASSIFIER_MODEL,
         messages=[
@@ -277,6 +285,7 @@ def run_pipeline(transcript_path: str | None = None):
     if not filtered_lines:
         print("No content after filtering. Exiting.")
         # Still write minimal artifacts for consistency
+        os.makedirs(".", exist_ok=True)
         with open("output.json","w",encoding="utf-8") as f:
             json.dump({
                 "filtering": {
@@ -377,6 +386,7 @@ Requirements:
     print(f"✅ Generated {len(test_cases)} test cases ({valid_count} valid Gherkin)")
 
     # 5) Persist: JSON artifact
+    os.makedirs(".", exist_ok=True)
     with open("output.json","w",encoding="utf-8") as f:
         json.dump({
             "filtering": {

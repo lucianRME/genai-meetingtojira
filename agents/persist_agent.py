@@ -1,5 +1,5 @@
 # agents/persist_agent.py
-import json, sqlite3, os
+import os, json, sqlite3
 from typing import Dict, Any
 from agents.base import Agent
 from generate_req_bdd import ensure_schema
@@ -15,13 +15,14 @@ class PersistAgent(Agent):
         test_cases = state.get("test_cases", [])
 
         # JSON artifact
+        os.makedirs(".", exist_ok=True)
         with open("output.json","w",encoding="utf-8") as f:
             json.dump({
                 "filtering": {
                     "total_lines": len(all_lines),
                     "kept": kept,
                     "dropped": dropped,
-                    "use_llm_classifier": False
+                    "use_llm_classifier": False,
                 },
                 "requirements": requirements,
                 "test_cases": test_cases
@@ -38,9 +39,9 @@ class PersistAgent(Agent):
                 "VALUES (?,?,?,?,?,?,COALESCE((SELECT approved FROM requirements WHERE id=?),0))",
                 (
                     r["id"], r.get("title",""), r.get("description",""),
-                    "\n".join(r.get("acceptance_criteria", [])),
+                    "\n".join(r.get("acceptance_riteria", r.get("acceptance_criteria", []))),
                     r.get("priority",""), r.get("epic",""),
-                    r["id"]
+                    r["id"],
                 )
             )
 
