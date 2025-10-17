@@ -1,168 +1,165 @@
-# 🤖 GenAI Requirements & BDD Generator (POC)
+🤖 Synapse — GenAI Requirements & BDD Generator (Agentic Framework)
 
-> 📝 **Meeting Transcript → Requirements + Test Cases → Approve → Export to Jira**
+🧠 Microsoft Teams Transcript → Structured Requirements + Test Cases → Review → Jira Sync
 
-This repository is a **Proof of Concept (POC)** showing how **GenAI can automate requirement engineering and QA** — converting real meeting transcripts (e.g., from Microsoft Teams) into:
+Synapse is an agentic AI proof-of-concept that automates requirement and test case generation from real meeting transcripts.
+It demonstrates how GenAI can integrate across Agile delivery stages — from transcript ingestion to Jira synchronization — using modular multi-agent orchestration.
 
-- 📋 **Requirements (user stories)**
-- ✅ **BDD / Gherkin test cases**
-- 🖥️ **Manual approval UI**
-- 📤 **CSV export for Jira**
+🌐 End-to-End Flow
+Stage	Agent	Description
+1️⃣	IngestAgent	Reads .vtt meeting transcript from Teams or OneDrive
+2️⃣	RequirementAgent	Extracts 3–6 structured business requirements
+3️⃣	ReviewAgent	Validates, deduplicates, and classifies requirements
+4️⃣	TestAgent	Generates 3 BDD / Gherkin test cases per requirement
+5️⃣	PersistAgent	Writes results to SQLite (repo.db) and JSON
+6️⃣	Flask UI (app/)	Human approval and one-click Jira sync
+7️⃣	JiraAgent	Idempotently syncs approved requirements and tests to Jira
+🧱 Architecture (Agentic Controller)
+flowchart TD
+    A[Transcript .vtt/.txt] --> B[IngestAgent]
+    B --> C[RequirementAgent]
+    C --> D[ReviewAgent]
+    D --> E[TestAgent]
+    E --> F[PersistAgent]
+    F --> G[(repo.db)]
+    F --> H[output.json]
+    G --> I[Flask UI - app/app.py<br>Approve + Sync]
+    I --> J[Jira Cloud (idempotent sync)]
+    F --> K[export_csv.py<br>CSV export]
+    J --> L[Analytics & Reporting]
 
----
+🔧 Setup
+1. Environment
 
-## 🌐 Overview
+Create .env in project root:
 
-This POC demonstrates an **end-to-end (E2E)** AI-driven flow from raw meeting data to testable, traceable requirements — using OpenAI models and structured persistence.
-
-| Step | Description |
-|------|--------------|
-| 1️⃣ | Ingests `.vtt` meeting transcripts |
-| 2️⃣ | Filters small-talk and irrelevant lines (rule-based + optional LLM classifier) |
-| 3️⃣ | Extracts structured business requirements |
-| 4️⃣ | Generates **3 BDD test cases per requirement** (positive, negative, regression) |
-| 5️⃣ | Persists results to **SQLite (repo.db)** and **JSON (output.json)** |
-| 6️⃣ | Optionally exports to **CSV → Jira import** |
-| 7️⃣ | Ready for multi-agent orchestration and analytics |
-
----
-
-## 🔐 API Key Setup
-
-You’ll need an OpenAI API key.
-
-1. Go to [https://platform.openai.com/account/api-keys](https://platform.openai.com/account/api-keys)
-2. Click **Create new secret key** and copy it (`sk-...`)
-3. Create a file `.env` in the project root with:
-
-```
-OPENAI_API_KEY=sk-YOUR-KEY-HERE
+OPENAI_API_KEY=sk-your-key
 OPENAI_MODEL=gpt-4o
 OPENAI_TEMPERATURE=0.2
 
-# Optional toggles
-SMALLTALK_FILTER=1
-SMALLTALK_LLM_CLASSIFIER=0
-SMALLTALK_CLASSIFIER_MODEL=gpt-4o-mini
+# Jira
+JIRA_URL=https://yourcompany.atlassian.net
+JIRA_USER=you@example.com
+JIRA_API_TOKEN=your-jira-token
+JIRA_PROJECT=SCRUM
 
-# File paths
-TRANSCRIPT_FILE=meeting_transcript.vtt
-OUTPUT_DIR=output
-OUTPUT_BASENAME=demo_run
-```
+# Behaviour
+PIPELINE_MODE=agentic
+JIRA_SYNC_ON_PIPELINE=1
+JIRA_APPROVED_ONLY=1
 
----
 
-## ⚙️ Architecture
+⚠️ Never commit .env — it’s excluded via .gitignore.
 
-```mermaid
-flowchart TD
-    A[Meeting Transcript (.vtt)] --> B[generate_req_bdd.py<br>Run Pipeline]
-    B -->|OpenAI API| C[Requirements + BDD Test Cases]
-    C --> D[(repo.db)]
-    C --> E[output.json]
-    D --> F[Flask UI app.py<br>Manual Approval]
-    F --> D
-    D --> G[export_csv.py]
-    G --> H[CSV for Jira]
-    B --> I[run_pipeline.py<br>E2E Controller]
-```
-
----
-
-## 🚀 How to Run
-
-### 🧩 1. Install dependencies
-```
+2. Install dependencies
 pip install -r requirements.txt
-```
 
-### ▶️ 2. Run the full E2E pipeline
-```
-python run_pipeline.py
-```
+3. Run full Agentic pipeline
+python run_pipeline.py --mode agentic
 
-This will:
-- Read your `meeting_transcript.vtt`
-- Generate structured requirements + test cases
-- Persist results in `output.json` and `repo.db`
-- Export CSVs via `export_csv.py` (if present)
-- Print a clean summary of results
 
-You can also specify another transcript manually:
-```
-python generate_req_bdd.py path/to/another_transcript.vtt
-```
+Output:
 
----
+🧩 Requirements: 4
+✅ Test cases: 12
+✅ Jira sync complete.
+📦 outputs: output.json , repo.db
 
-## 🧱 Repository Structure
+4. Launch the Review UI
+python -m app.app
 
-```
-.
-├── generate_req_bdd.py      # Core LLM pipeline (requirements + BDD)
-├── run_pipeline.py          # E2E orchestrator (1-click flow)
-├── export_csv.py            # CSV / Jira export
-├── app.py                   # Optional Flask UI for approvals
-├── meeting_transcript.vtt   # Example transcript input
-├── output.json              # LLM output artifact
-├── repo.db                  # SQLite persistence layer
-├── requirements.txt         # Dependencies
-└── output/                  # Demo CSV outputs
-```
 
----
+Then open http://127.0.0.1:5000/
 
-## 🧠 Recent Improvements (v2 – Agentic Ready)
+✅ Approve requirements
+✅ Sync approved items directly to Jira
+✅ View effective project/session memory (tone, prefix, etc.)
 
-### 🔄 Core Script (`generate_req_bdd.py`)
-- Refactored into `run_pipeline()` callable for orchestration  
-- Deterministic sequential IDs (`REQ-001`, `REQ-002`, …)  
-- Exactly 3 acceptance criteria per requirement (pads/trims automatically)  
-- Robust JSON parsing and fallback recovery  
-- Normalized single-line Gherkin output  
-- Graceful handling of empty transcripts  
-- Same schema compatibility (`output.json`, `repo.db`)
+🧠 Memory & Session Awareness
 
-### 🚀 New Orchestrator (`run_pipeline.py`)
-- Single command to run the entire flow  
-- Auto-calls `generate_req_bdd.py`  
-- Optionally triggers `export_csv.py`  
-- Outputs demo CSVs in `/output`  
-- Prints clear metrics + file paths  
-- Foundation for multi-agent control loop  
+Synapse uses a lightweight memory store in SQLite:
 
----
+Table	Purpose
+memory_project	Project-level configuration (e.g., Jira prefixes, tone)
+memory_session	Session-specific overrides
+sessions	Execution trace for orchestration context
 
-## 📊 Example Output
+Example seeding:
 
-**Console summary**
-```
-📋 Extracted 5 requirements:
-- REQ-001 Login authentication
-- REQ-002 Password reset
-...
-✅ Generated 15 test cases (15 valid Gherkin)
-🎯 Done. Lines kept: 210/248 (classifier=off)
+INSERT OR REPLACE INTO memory_project(project_id,key,value)
+VALUES
+ ('primark','tone','Concise, British English'),
+ ('primark','jira.story_prefix','PK');
+
+📊 Example Output
+
+Console
+
 🚀 E2E DONE
-🧩 requirements: 5
-✅ test cases:   15
-📦 outputs:      output.json , repo.db
-📑 csv:          output/demo_run_requirements.csv , output/demo_run_test_cases.csv
-```
+🧩 requirements: 4
+✅ test cases:    12
+📦 outputs:       output.json , repo.db
+🧭 project_id:    primark
+🧾 session_id:    91b3e6aa...
 
----
 
-## 🧩 Next Steps
-- Add **ReviewAgent** for validation and deduplication  
-- Integrate **Jira API** for direct issue creation  
-- Add **MetricsAgent** for baseline vs improved runs  
-- Parallelize per-chunk LLM calls  
-- Extend UI for “Approve → Export → Sync to Jira”
+Jira Cloud
 
----
+Stories: PK-101, PK-102
 
-## 💡 Vision
-> This POC shows how GenAI can move beyond text generation —  
-> becoming an **autonomous system for requirements engineering**  
-> that improves over time, validates itself, and connects directly to delivery tools.
+Linked Test Tasks: PK-103–PK-108 via Relates links
+
+🧩 Repository Layout
+.
+├── agents/
+│   ├── agentic_controller.py     # Multi-agent orchestrator
+│   ├── ingest_agent.py           # Transcript ingestion
+│   ├── requirements_agent.py     # Requirement extraction
+│   ├── review_agent.py           # Review & dedupe logic
+│   ├── tests_agent.py            # BDD generation
+│   ├── persist_agent.py          # DB persistence
+│   └── jira_agent.py             # Jira sync (ADF idempotent)
+│
+├── app/
+│   ├── app.py                    # Flask web UI
+│   └── templates/
+│
+├── infra/memory.py               # Memory hydrator and trace store
+├── schemas.py                    # Data validation helpers
+├── run_pipeline.py               # E2E orchestrator
+├── export_csv.py                 # CSV export
+├── repo.db                       # SQLite store
+├── output/                       # Generated CSVs
+└── requirements.txt
+
+🚀 Current Capabilities (v3)
+
+✅ Full Agentic orchestration
+
+✅ Persistent memory (project + session)
+
+✅ Flask UI for review and Jira sync
+
+✅ Deterministic, idempotent Jira integration
+
+✅ Robust JSON recovery & chunking logic
+
+✅ CSV + SQLite persistence
+
+✅ Modular agent framework ready for enterprise scaling
+
+🔮 Next Milestone (v4)
+
+🧠 Chain-of-Thought traces + self-checks per agent
+
+📈 Metrics dashboard in UI
+
+☁️ Azure App Service / ACR container deployment
+
+📂 OneDrive ingestion for auto transcript detection
+
+🧭 Vision
+
+Synapse illustrates how GenAI can act as an intelligent assistant for delivery teams —
+converting raw conversation into structured, testable, and traceable artifacts
+directly integrated with enterprise tools like Jira and Azure DevOps.
