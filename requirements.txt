@@ -8,7 +8,7 @@ python-dotenv>=1.0.0,<2
 pandas>=2.0,<3
 
 # Optional UI (your app.py)
-flask>=2.3,<3
+flask>=3.0,<4
 
 # SQLite helpers (you use the stdlib sqlite3; this is optional utility)
 sqlite-utils>=3.35,<4

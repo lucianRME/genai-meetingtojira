@@ -1,10 +1,15 @@
-# app.py
+# app/app.py
 from __future__ import annotations
-import os
+
+# ⬇️ Add this BEFORE importing agents/review
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import sqlite3
 from flask import Flask, render_template_string, redirect, request, flash, get_flashed_messages
 from agents.jira_agent import create_from_db  # reuse your Jira sync logic
 from review import bp as review_bp            # NEW: register /review blueprint
+
 
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
 

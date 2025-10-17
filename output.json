@@ -9,23 +9,23 @@
     {
       "id": "REQ-001",
       "title": "Email One-Time Code for Password Reset",
-      "description": "Enable users to reset their passwords using a one-time code sent via email.",
+      "description": "Implement a feature allowing users to reset their password using a one-time code sent via email.",
       "acceptance_criteria": [
-        "Given a user requests a password reset, When they receive an email, Then the email contains a one-time code.",
-        "Given a user enters a one-time code, When the code is valid, Then the password reset is successful.",
-        "Given a user enters a one-time code, When the code is expired, Then the password reset fails."
+        "Given a user requests a password reset, when they receive an email, then the email contains a one-time code.",
+        "Given a user enters a one-time code, when the code is valid and not expired, then the password reset is successful.",
+        "Given a user enters a one-time code, when the code is expired or invalid, then the password reset fails."
       ],
       "priority": "High",
       "epic": "Password Reset Feature"
     },
     {
       "id": "REQ-002",
-      "title": "One-Time Code Expiration",
-      "description": "The one-time code sent for password reset should expire after 10 minutes.",
+      "title": "One-Time Code Expiry",
+      "description": "Ensure the one-time code sent for password reset expires after 10 minutes.",
       "acceptance_criteria": [
-        "Given a one-time code is sent, When 10 minutes have passed, Then the code is expired.",
-        "Given a user enters an expired code, When attempting to reset the password, Then the reset fails.",
-        "Given a user requests a new code, When the previous code is expired, Then a new code is sent."
+        "Given a one-time code is generated, when 10 minutes have passed, then the code is expired.",
+        "Given a user enters a one-time code, when the code is expired, then the password reset fails.",
+        "Given a user requests a new password reset, when the previous code is expired, then a new code is sent."
       ],
       "priority": "High",
       "epic": "Password Reset Feature"
@@ -33,11 +33,11 @@
     {
       "id": "REQ-003",
       "title": "Rate Limiting for Password Reset",
-      "description": "Limit password reset attempts to a maximum of 3 per hour per user.",
+      "description": "Implement rate limiting to allow a maximum of 3 password reset attempts per hour per user.",
       "acceptance_criteria": [
-        "Given a user attempts password reset, When they exceed 3 attempts in an hour, Then further attempts are blocked.",
-        "Given a user is blocked, When an hour has passed, Then they can attempt password reset again.",
-        "Given a user is blocked, When they attempt a reset, Then they receive a notification of the block."
+        "Given a user requests a password reset, when they have not exceeded 3 attempts in an hour, then the request is processed.",
+        "Given a user requests a password reset, when they exceed 3 attempts in an hour, then the request is denied.",
+        "Given a user exceeds the attempt limit, when an hour has passed, then the attempt count resets."
       ],
       "priority": "Medium",
       "epic": "Password Reset Feature"
@@ -45,11 +45,11 @@
     {
       "id": "REQ-004",
       "title": "Audit Event for Successful Password Reset",
-      "description": "An audit event should be logged when a password is successfully reset.",
+      "description": "Send an audit event whenever a password is successfully reset.",
       "acceptance_criteria": [
-        "Given a password reset is successful, When the process completes, Then an audit event is logged.",
-        "Given an audit event is logged, When reviewing logs, Then the event is visible.",
-        "Given a password reset attempt, When it is unsuccessful, Then no audit event is logged."
+        "Given a password reset is successful, when the process completes, then an audit event is sent.",
+        "Given an audit event is sent, when it is logged, then it is available for verification.",
+        "Given a password reset attempt, when it is unsuccessful, then no audit event is sent."
       ],
       "priority": "Medium",
       "epic": "Password Reset Feature"
@@ -59,7 +59,7 @@
     {
       "requirement_id": "REQ-001",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Successful password reset with valid one-time code Given a user requests a password reset When they receive an email Then the email contains a one-time code And the user enters the valid code Then the password reset is successful",
+      "gherkin": "Scenario: Successful password reset with valid code Given a user requests a password reset When they receive an email with a one-time code Then the email contains a valid one-time code",
       "tags": [
         "@positive"
       ],
@@ -68,7 +68,7 @@
     {
       "requirement_id": "REQ-001",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Password reset fails with expired one-time code Given a user requests a password reset When they receive an email And the code is expired Then the password reset fails",
+      "gherkin": "Scenario: Password reset fails with expired code Given a user enters a one-time code When the code is expired Then the password reset fails",
       "tags": [
         "@negative"
       ],
@@ -77,7 +77,7 @@
     {
       "requirement_id": "REQ-001",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Email contains one-time code for password reset Given a user requests a password reset When they receive an email Then the email contains a one-time code",
+      "gherkin": "Scenario: Regression test for valid code usage Given a user enters a one-time code When the code is valid and not expired Then the password reset is successful",
       "tags": [
         "@regression"
       ],
@@ -86,7 +86,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "positive",
-      "gherkin": "Scenario: One-time code expires after 10 minutes Given a one-time code is sent When 10 minutes have passed Then the code is expired",
+      "gherkin": "Scenario: One-time code expires after 10 minutes Given a one-time code is generated When 10 minutes have passed Then the code is expired",
       "tags": [
         "@positive"
       ],
@@ -95,7 +95,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Password reset fails with expired code Given a user enters an expired code When attempting to reset the password Then the reset fails",
+      "gherkin": "Scenario: Password reset fails with expired code Given a user enters a one-time code When the code is expired Then the password reset fails",
       "tags": [
         "@negative"
       ],
@@ -104,7 +104,7 @@
     {
       "requirement_id": "REQ-002",
       "scenario_type": "regression",
-      "gherkin": "Scenario: New code sent after previous code expires Given a user requests a new code When the previous code is expired Then a new code is sent",
+      "gherkin": "Scenario: New code sent after previous code expires Given a user requests a new password reset When the previous code is expired Then a new code is sent",
       "tags": [
         "@regression"
       ],
@@ -113,7 +113,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Block further attempts after 3 password reset attempts Given a user attempts password reset When they exceed 3 attempts in an hour Then further attempts are blocked",
+      "gherkin": "Scenario: Password reset request within limit Given a user requests a password reset When they have not exceeded 3 attempts in an hour Then the request is processed",
       "tags": [
         "@positive"
       ],
@@ -122,7 +122,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "negative",
-      "gherkin": "Scenario: Notification of block after exceeding attempts Given a user is blocked When they attempt a reset Then they receive a notification of the block",
+      "gherkin": "Scenario: Password reset request denied after limit Given a user requests a password reset When they exceed 3 attempts in an hour Then the request is denied",
       "tags": [
         "@negative"
       ],
@@ -131,7 +131,7 @@
     {
       "requirement_id": "REQ-003",
       "scenario_type": "regression",
-      "gherkin": "Scenario: User can attempt password reset after an hour Given a user is blocked When an hour has passed Then they can attempt password reset again",
+      "gherkin": "Scenario: Attempt count resets after an hour Given a user exceeds the attempt limit When an hour has passed Then the attempt count resets",
       "tags": [
         "@regression"
       ],
@@ -140,7 +140,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "positive",
-      "gherkin": "Scenario: Audit event logged for successful password reset Given a password reset is successful When the process completes Then an audit event is logged",
+      "gherkin": "Scenario: Audit event sent for successful reset Given a password reset is successful When the process completes Then an audit event is sent",
       "tags": [
         "@positive"
       ],
@@ -149,7 +149,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "negative",
-      "gherkin": "Scenario: No audit event logged for unsuccessful password reset Given a password reset attempt When it is unsuccessful Then no audit event is logged",
+      "gherkin": "Scenario: No audit event for unsuccessful reset Given a password reset attempt When it is unsuccessful Then no audit event is sent",
       "tags": [
         "@negative"
       ],
@@ -158,7 +158,7 @@
     {
       "requirement_id": "REQ-004",
       "scenario_type": "regression",
-      "gherkin": "Scenario: Audit event visible in logs after successful reset Given an audit event is logged When reviewing logs Then the event is visible",
+      "gherkin": "Scenario: Audit event logged for verification Given an audit event is sent When it is logged Then it is available for verification",
       "tags": [
         "@regression"
       ],

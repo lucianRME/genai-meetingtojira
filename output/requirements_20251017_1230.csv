@@ -1,0 +1,16 @@
+IssueKey,Summary,Description,IssueType,Priority,EpicLink,Status,AcceptanceCriteria
+REQ-005,Regression Testing for Existing Login Flow,Conduct regression tests to ensure that the existing login flow is not affected by the new password reset feature.,Story,High,Password Reset Feature,Draft,"Existing login functionality works as expected post-implementation.
+No new errors are introduced in the login process.
+All existing login test cases pass successfully."
+REQ-001,Email One-Time Code for Password Reset,Implement a feature allowing users to reset their password using a one-time code sent via email.,Story,High,Password Reset Feature,Approved,"Given a user requests a password reset, when they receive an email, then the email contains a one-time code.
+Given a user enters a one-time code, when the code is valid and not expired, then the password reset is successful.
+Given a user enters a one-time code, when the code is expired or invalid, then the password reset fails."
+REQ-002,One-Time Code Expiry,Ensure the one-time code sent for password reset expires after 10 minutes.,Story,High,Password Reset Feature,Approved,"Given a one-time code is generated, when 10 minutes have passed, then the code is expired.
+Given a user enters a one-time code, when the code is expired, then the password reset fails.
+Given a user requests a new password reset, when the previous code is expired, then a new code is sent."
+REQ-003,Rate Limiting for Password Reset,Implement rate limiting to allow a maximum of 3 password reset attempts per hour per user.,Story,Medium,Password Reset Feature,Draft,"Given a user requests a password reset, when they have not exceeded 3 attempts in an hour, then the request is processed.
+Given a user requests a password reset, when they exceed 3 attempts in an hour, then the request is denied.
+Given a user exceeds the attempt limit, when an hour has passed, then the attempt count resets."
+REQ-004,Audit Event for Successful Password Reset,Send an audit event whenever a password is successfully reset.,Story,Medium,Password Reset Feature,Draft,"Given a password reset is successful, when the process completes, then an audit event is sent.
+Given an audit event is sent, when it is logged, then it is available for verification.
+Given a password reset attempt, when it is unsuccessful, then no audit event is sent."

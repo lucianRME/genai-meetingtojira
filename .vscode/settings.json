@@ -1,4 +1,13 @@
 {
-    "python-envs.defaultEnvManager": "ms-python.python:system",
-    "python-envs.pythonProjects": []
+  // Tell VS Code exactly which Python to use
+  "python.defaultInterpreterPath": "/home/codespace/.python/current/bin/python",
+
+  // Keep auto-import and indexing features on
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.indexing": true,
+
+  // Optional: hide the red squiggle if Pylance temporarily lags
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "information"
+  }
 }
