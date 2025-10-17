@@ -3,7 +3,6 @@ from __future__ import annotations
 
 # Ensure repo root on path
 import os, sys
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import sqlite3
 import subprocess
@@ -15,7 +14,7 @@ from flask import (
 
 # Reuse Jira and review UI
 from agents.jira_agent import create_from_db
-from review import bp as review_bp
+from app.review import bp as review_bp
 
 # Import session helpers from pipeline
 from run_pipeline import (
