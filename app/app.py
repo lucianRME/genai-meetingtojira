@@ -5,7 +5,10 @@ from __future__ import annotations
 import os, sys
 import sqlite3
 import subprocess
+import json
+import time
 from pathlib import Path
+from typing import Tuple
 
 from flask import (
     Flask, render_template_string, redirect, request, flash,
@@ -17,7 +20,7 @@ from flask import (
 try:
     from agents.jira_agent import create_from_db  # reuse your Jira sync logic
 except Exception as _jira_err:
-    def create_from_db(_db_path: str) -> None:
+    def create_from_db(_db_path: str, **_kwargs) -> None:
         raise RuntimeError(f"Jira integration unavailable: {_jira_err}")
 
 # Review blueprint (absolute import so CI resolves package paths)
@@ -55,6 +58,93 @@ run_memory_migration_once()
 if review_bp is not None:
     app.register_blueprint(review_bp)  # exposes /review
 
+# --- Session logging + summary helpers ---------------------------------------
+def _db():
+    return sqlite3.connect(DB_PATH)
+
+def _now() -> int:
+    return int(time.time())
+
+def _ensure_memory_tables():
+    """Be defensive in case infra/memory.sql wasn't applied yet."""
+    con = _db(); cur = con.cursor()
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS memory_action(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        actor TEXT,     -- e.g. 'ui','pipeline'
+        action TEXT,    -- e.g. 'session_start','heartbeat','ingest'
+        step TEXT,      -- optional
+        mode TEXT,      -- optional
+        payload TEXT    -- JSON (optional)
+      )
+    """)
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS memory_session(
+        session_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY(session_id, key)
+      )
+    """)
+    # Small indices for snappy UI
+    cur.execute("""
+      CREATE INDEX IF NOT EXISTS idx_memory_action_session_ts
+      ON memory_action(session_id, ts DESC)
+    """)
+    cur.execute("""
+      CREATE INDEX IF NOT EXISTS idx_memory_session_sid_key
+      ON memory_session(session_id, key)
+    """)
+    con.commit(); con.close()
+
+_ensure_memory_tables()
+
+def _log_action(session_id: str, action: str, *, actor="ui", step=None, mode=None, payload: dict | None=None):
+    con = _db(); cur = con.cursor()
+    cur.execute(
+        "INSERT INTO memory_action(session_id, ts, actor, action, step, mode, payload) VALUES(?,?,?,?,?,?,?)",
+        (session_id, _now(), actor, action, step, mode, json.dumps(payload or {}))
+    )
+    con.commit(); con.close()
+
+def _append_rolling_summary(session_id: str, bullet: str, limit_chars: int = 1800):
+    """Prepend a bullet to memory_session.rolling_summary, keep under ~1–2k chars."""
+    if not bullet or not bullet.strip():
+        return
+    con = _db(); con.row_factory = sqlite3.Row; cur = con.cursor()
+    cur.execute("SELECT value FROM memory_session WHERE session_id=? AND key='rolling_summary'", (session_id,))
+    row = cur.fetchone()
+    current = row["value"] if row else ""
+    merged = f"• {bullet.strip()}\n{current}"
+    compact = merged[:limit_chars]
+    cur.execute("""
+        INSERT INTO memory_session(session_id, key, value) VALUES(?,?,?)
+        ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
+    """, (session_id, "rolling_summary", compact))
+    # also bump an updated_at for your snapshot widget
+    cur.execute("""
+        INSERT INTO memory_session(session_id, key, value) VALUES(?,?,?)
+        ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
+    """, (session_id, "updated_at", str(_now())))
+    con.commit(); con.close()
+
+def _set_kv(session_id: str, key: str, value: str | dict | list | int | float | None):
+    if value is None:
+        ser = None
+    elif isinstance(value, (dict, list)):
+        ser = json.dumps(value)
+    else:
+        ser = str(value)
+    con = _db(); cur = con.cursor()
+    cur.execute("""
+        INSERT INTO memory_session(session_id, key, value) VALUES(?,?,?)
+        ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
+    """, (session_id, key, ser))
+    con.commit(); con.close()
+
+# --- HTML Template ------------------------------------------------------------
 TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -169,11 +259,24 @@ TEMPLATE = """
       {% endif %}
     </div>
   {% endfor %}
+
+  <script>
+  (async function() {
+    try { await fetch("/api/session/start", { method: "POST" }); } catch(e) {}
+  })();
+  setInterval(() => {
+    fetch("/api/session/heartbeat", {
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({ page: location.pathname })
+    });
+  }, 60000);
+  </script>
 </body>
 </html>
 """
 
-def _get_or_create_session(conn_sqlite):
+# --- Internal helpers ---------------------------------------------------------
+def _get_or_create_session(conn_sqlite: sqlite3.Connection) -> Tuple[str, dict]:
     """Return a valid session_id (cookie or new), and the snapshot."""
     sid = request.cookies.get("session_id")
     if not sid:
@@ -202,6 +305,7 @@ def _get_transcript_preview(sid: str, limit: int = 6000) -> tuple[str, bool]:
     truncated = len(text) > limit
     return (text[:limit], truncated)
 
+# --- Routes: pages ------------------------------------------------------------
 @app.route("/")
 def home():
     conn = rp_get_conn()
@@ -281,8 +385,10 @@ def unapprove(req_id):
 
 @app.route("/sync", methods=["POST"])
 def sync_to_jira():
+    # Ensure Jira sync logs into the same session and appends summary bullets
+    sid = request.cookies.get("session_id")
     try:
-        create_from_db(DB_PATH)
+        create_from_db(DB_PATH, project_id=PROJECT_ID, session_id=sid)
         flash("✅ Jira sync complete — approved items pushed successfully.", "success")
     except Exception as e:
         flash(f"❌ Jira sync failed or unavailable: {e}", "error")
@@ -292,6 +398,61 @@ def sync_to_jira():
 def health():
     return "ok", 200
 
+# --- Step 2: Session APIs -----------------------------------------------------
+@app.post("/api/session/start")
+def api_session_start():
+    """Create/confirm session, set cookie, log, and seed rolling summary."""
+    conn = rp_get_conn()
+    sid, _snap = _get_or_create_session(conn)
+    conn.close()
+
+    _log_action(sid, "session_start", actor="ui", payload={"ua": request.headers.get("User-Agent")})
+    _append_rolling_summary(sid, "User opened the UI.")
+
+    resp = make_response(jsonify({"ok": True, "session_id": sid}))
+    resp.set_cookie("session_id", sid, max_age=60*60*24*365, samesite="Lax")
+    return resp, 200
+
+@app.get("/api/session/rehydrate")
+def api_session_rehydrate():
+    """Return compact context for the UI: summary + recent actions + small state."""
+    conn = rp_get_conn()
+    sid, snap = _get_or_create_session(conn)
+
+    # Your snapshot already exposes rolling_summary and last_actions.
+    summary = (snap.get("rolling_summary") if isinstance(snap, dict) else getattr(snap, "rolling_summary", "")) or ""
+    last_actions = (snap.get("last_actions") if isinstance(snap, dict) else getattr(snap, "last_actions", [])) or []
+
+    # Example: a small KV you might want to persist for resume
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT value FROM memory_session WHERE session_id=? AND key='project_id'",
+        (sid,)
+    ).fetchone()
+    conn.close()
+    project_id_saved = row[0] if row and row[0] else None
+
+    return jsonify({
+        "ok": True,
+        "session_id": sid,
+        "summary": summary[:2000],
+        "recent_actions": last_actions[-10:] if isinstance(last_actions, list) else [],
+        "state": {"project_id": project_id_saved or PROJECT_ID},
+    }), 200
+
+@app.post("/api/session/heartbeat")
+def api_session_heartbeat():
+    """Lightweight ping so the session shows activity in 'Recent actions'."""
+    conn = rp_get_conn()
+    sid, _snap = _get_or_create_session(conn)
+    conn.close()
+
+    data = request.get_json(silent=True) or {}
+    _log_action(sid, "heartbeat", actor="ui", payload={"page": data.get("page", "/")})
+    _set_kv(sid, "updated_at", str(_now()))
+    return jsonify({"ok": True, "session_id": sid}), 200
+
+# --- Main ---------------------------------------------------------------------
 if __name__ == "__main__":
     # 0.0.0.0 so Codespaces/containers expose the port
     app.run(host="0.0.0.0", port=5000, debug=True)

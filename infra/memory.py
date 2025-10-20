@@ -1,38 +1,80 @@
 # infra/memory.py
-import sqlite3, json
-from typing import Optional, Dict
+from __future__ import annotations
+import sqlite3
+from typing import Optional
 
-def _kv(rows) -> Dict[str, str]:
-    return {r["key"]: r["value"] for r in rows}
+DDL = """
+CREATE TABLE IF NOT EXISTS memory_global (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+CREATE TABLE IF NOT EXISTS memory_project (
+  project_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT,
+  PRIMARY KEY(project_id, key)
+);
+CREATE TABLE IF NOT EXISTS memory_session (
+  session_id TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value TEXT,
+  PRIMARY KEY(session_id, key)
+);
+"""
+
+def ensure_memory_tables(conn: sqlite3.Connection) -> None:
+    conn.executescript(DDL)
+    conn.commit()
 
 def load_memory(conn: sqlite3.Connection, project_id: Optional[str], session_id: Optional[str]) -> dict:
-    cur = conn.cursor(); cur.row_factory = sqlite3.Row
+    """Return a merged memory view; safe if tables don’t exist yet."""
+    ensure_memory_tables(conn)
+    cur = conn.cursor()
+    cur.row_factory = sqlite3.Row
+
     g = cur.execute("SELECT key,value FROM memory_global").fetchall()
-    p = cur.execute("SELECT key,value FROM memory_project WHERE project_id=?", (project_id,)).fetchall() if project_id else []
-    s = cur.execute("SELECT key,value FROM memory_session WHERE session_id=?", (session_id,)).fetchall() if session_id else []
-    return {**_kv(g), **_kv(p), **_kv(s)}
-
-def prompt_hydrator(conn: sqlite3.Connection,
-                    base_system_prompt: str,
-                    project_id: Optional[str] = None,
-                    session_id: Optional[str] = None,
-                    extra_ctx: str = "") -> str:
-    mem = load_memory(conn, project_id, session_id)
-    tone = mem.get("tone", "Concise, British English")
-    jira_story_prefix = mem.get("jira.story_prefix", "PK")
-    format_rules = mem.get("format.rules", "Use bullet points; BDD Given/When/Then")
-
-    session_bits = ""
+    p = []
+    if project_id:
+        p = cur.execute(
+            "SELECT key,value FROM memory_project WHERE project_id=?",
+            (project_id,)
+        ).fetchall()
+    s = []
     if session_id:
-        cur = conn.cursor(); cur.row_factory = sqlite3.Row
-        row = cur.execute("SELECT rolling_summary FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-        if row and row["rolling_summary"]:
-            session_bits = f"\n[SessionSummary]\n{row['rolling_summary']}\n"
+        s = cur.execute(
+            "SELECT key,value FROM memory_session WHERE session_id=?",
+            (session_id,)
+        ).fetchall()
 
-    memory_block = f"""[Memory]
-tone: {tone}
-jira_story_prefix: {jira_story_prefix}
-format_rules: {format_rules}
-"""
-    context_block = f"\n[Context]\n{extra_ctx}\n" if extra_ctx else ""
-    return memory_block + session_bits + context_block + "\n" + base_system_prompt
+    def rows_to_dict(rows):
+        out = {}
+        for r in rows:
+            out[r["key"]] = r["value"]
+        return out
+
+    return {
+        "global": rows_to_dict(g),
+        "project": rows_to_dict(p),
+        "session": rows_to_dict(s),
+    }
+
+def prompt_hydrator(conn: sqlite3.Connection, *, base_system_prompt: str,
+                    project_id: Optional[str] = None, session_id: Optional[str] = None,
+                    extra_ctx: str = "") -> str:
+    """
+    Build a SYSTEM prompt using Memory. Always safe to call (creates tables if missing).
+    """
+    mem = load_memory(conn, project_id, session_id)
+    tone = (mem["project"].get("tone") or mem["global"].get("tone") or "British English").strip()
+    jira_prefix = (mem["project"].get("jira_story_prefix") or "").strip()
+
+    blocks = [
+        base_system_prompt.strip(),
+        f"[Tone] Use {tone}.",
+    ]
+    if jira_prefix:
+        blocks.append(f"[Jira] Story prefix: {jira_prefix}")
+    if extra_ctx:
+        blocks.append(f"[Context]\n{extra_ctx.strip()}")
+
+    return "\n\n".join(blocks).strip()

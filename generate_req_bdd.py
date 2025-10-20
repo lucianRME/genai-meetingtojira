@@ -230,7 +230,7 @@ def enforce_ids_and_ac(requirements: List[dict]) -> List[dict]:
 def ensure_schema():
     conn = sqlite3.connect("repo.db")
     cur = conn.cursor()
-    # Base tables
+    # Base tables with all columns used by UI/tests
     cur.execute("""CREATE TABLE IF NOT EXISTS requirements (
       id TEXT PRIMARY KEY,
       title TEXT,
@@ -238,14 +238,20 @@ def ensure_schema():
       criteria TEXT,
       priority TEXT,
       epic TEXT,
-      approved INTEGER DEFAULT 0
+      approved INTEGER DEFAULT 0,
+      status TEXT,
+      review_notes TEXT,
+      reviewer TEXT,
+      reviewed_at TEXT,
+      jira_key TEXT
     )""")
     cur.execute("""CREATE TABLE IF NOT EXISTS test_cases (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       requirement_id TEXT,
       scenario_type TEXT,
       gherkin TEXT,
-      tags TEXT
+      tags TEXT,
+      jira_key TEXT
     )""")
 
     # Add missing columns for old DBs
@@ -253,14 +259,21 @@ def ensure_schema():
         cur.execute(f"PRAGMA table_info({table})")
         return any(r[1] == col for r in cur.fetchall())
 
-    if not have_col("requirements", "priority"):
-        cur.execute("ALTER TABLE requirements ADD COLUMN priority TEXT")
-    if not have_col("requirements", "epic"):
-        cur.execute("ALTER TABLE requirements ADD COLUMN epic TEXT")
-    if not have_col("requirements", "approved"):
-        cur.execute("ALTER TABLE requirements ADD COLUMN approved INTEGER DEFAULT 0")
-    if not have_col("test_cases", "tags"):
-        cur.execute("ALTER TABLE test_cases ADD COLUMN tags TEXT")
+    add_cols = [
+        ("requirements", "priority", "TEXT"),
+        ("requirements", "epic", "TEXT"),
+        ("requirements", "approved", "INTEGER DEFAULT 0"),
+        ("requirements", "status", "TEXT"),
+        ("requirements", "review_notes", "TEXT"),
+        ("requirements", "reviewer", "TEXT"),
+        ("requirements", "reviewed_at", "TEXT"),
+        ("requirements", "jira_key", "TEXT"),
+        ("test_cases", "tags", "TEXT"),
+        ("test_cases", "jira_key", "TEXT"),
+    ]
+    for table, col, ddl in add_cols:
+        if not have_col(table, col):
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
 
     conn.commit(); conn.close()
 
@@ -406,24 +419,31 @@ Requirements:
 
     for r in requirements:
         cur.execute(
-            "INSERT OR REPLACE INTO requirements (id,title,description,criteria,priority,epic,approved) "
-            "VALUES (?,?,?,?,?,?,COALESCE((SELECT approved FROM requirements WHERE id=?),0))",
+            "INSERT OR REPLACE INTO requirements (id,title,description,criteria,priority,epic,approved,status,review_notes,reviewer,reviewed_at,jira_key) "
+            "VALUES (?,?,?,?,?,?,COALESCE((SELECT approved FROM requirements WHERE id=?),0),"
+            "COALESCE((SELECT status FROM requirements WHERE id=?),'draft'),"
+            "COALESCE((SELECT review_notes FROM requirements WHERE id=?),''),"
+            "COALESCE((SELECT reviewer FROM requirements WHERE id=?),''),"
+            "COALESCE((SELECT reviewed_at FROM requirements WHERE id=?),''),"
+            "COALESCE((SELECT jira_key FROM requirements WHERE id=?),'')"
+            ")",
             (
                 r["id"], r.get("title",""), r.get("description",""),
                 "\n".join(r.get("acceptance_criteria", [])),
                 r.get("priority"), r.get("epic"),
-                r["id"]
+                r["id"], r["id"], r["id"], r["id"], r["id"], r["id"]
             )
         )
 
     for t in test_cases:
         cur.execute(
-            "INSERT INTO test_cases (requirement_id,scenario_type,gherkin,tags) VALUES (?,?,?,?)",
+            "INSERT INTO test_cases (requirement_id,scenario_type,gherkin,tags,jira_key) VALUES (?,?,?,?,?)",
             (
                 t.get("requirement_id",""),
                 t.get("scenario_type",""),
                 t.get("gherkin",""),
-                json.dumps(t.get("tags", []))
+                json.dumps(t.get("tags", [])),
+                ""
             )
         )
 

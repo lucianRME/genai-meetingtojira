@@ -1,20 +1,26 @@
+# agents/jira_agent.py
 """
-agents/jira_agent.py
-
 Enhanced Jira synchronization for Synapse:
 - Reads requirements and test cases from repo.db
 - Creates/updates Jira issues deterministically using labels (and stored jira_key)
 - Writes Jira keys back into the DB
 - Includes requirement Description + Acceptance Criteria in Stories
 - Includes Gherkin in Tasks (code block)
-- Links each Test Task to its parent Requirement Story using issueLink
 
-New:
+New in this version:
 - Optional Memory-aware, LLM-assisted summaries (titles) using infra.memory.prompt_hydrator
   Toggle with env: JIRA_USE_LLM_TITLES (default '1')
 - Idempotent content-hash guard to avoid duplicates/pointless updates
   Toggle with env: JIRA_IDEMPOTENT_SKIP_WITH_HASH (default '1')
+- **Key propagation for tests**: if the newest test row lacks jira_key but an older row
+  for the same (requirement_id, scenario_type) has one, reuse that key to UPDATE rather than CREATE,
+  even if Jira JQL search is unavailable (e.g., 410 Gone).
+
+Linking:
+- Controlled by env JIRA_CREATE_LINKS (default '1'). If disabled, we do not create links.
 """
+
+from __future__ import annotations
 
 import os
 import re
@@ -23,7 +29,22 @@ import hashlib
 from typing import Dict, Any, Optional, Tuple
 import requests
 
-# NEW: memory + LLM helpers
+# Session helpers (graceful no-op if unavailable in CI)
+try:
+    from app.session_manager import (
+        log_action as _sm_log_action,
+        update_summary as _sm_update_summary,
+        set_state as _sm_set_state,
+    )
+except Exception:
+    def _sm_log_action(session_id: str, action_type: str, payload: Dict[str, Any] | None = None):
+        return None
+    def _sm_update_summary(session_id: str, bullet: str):
+        return None
+    def _sm_set_state(session_id: str, key: str, value: Any):
+        return None
+
+# Memory + LLM helpers
 from infra.memory import prompt_hydrator
 from generate_req_bdd import _chat, MODEL, TEMPERATURE
 
@@ -58,7 +79,6 @@ def _hash_content(*parts: str) -> str:
     text = "\n".join(p or "" for p in parts)
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 
-
 # ---------------- Jira client ----------------
 
 class JiraAgent:
@@ -76,6 +96,9 @@ class JiraAgent:
         return r
 
     def _jql_search_one(self, jql: str) -> Optional[str]:
+        """
+        Best-effort search for an issue key. Safe to fail (e.g., 410 Gone).
+        """
         if os.getenv("JIRA_SKIP_SEARCH", "0") == "1":
             return None
         try:
@@ -131,7 +154,7 @@ class JiraAgent:
 
     def link_issues(self, *, inward_key: str, outward_key: str, link_type: str = "Relates") -> None:
         """
-        Create an issue link between inward_key <-link_type-> outward_key.
+        Create an issue link between inward_key ←link_type→ outward_key.
         For symmetric types like 'Relates', direction doesn't matter.
         If a duplicate link error occurs, it's ignored.
         """
@@ -148,7 +171,6 @@ class JiraAgent:
                 print(f"ℹ️ Link {inward_key}—{link_type}—{outward_key} may already exist; skipping.")
             else:
                 print(f"ℹ️ Issue link creation skipped for {inward_key} ←{link_type}→ {outward_key}: {e}")
-
 
 # ---------------- Memory-aware LLM title helpers (optional) ----------------
 
@@ -210,7 +232,6 @@ def _maybe_llm_summary_for_test(conn: sqlite3.Connection, project_id: str, sessi
         print(f"ℹ️ LLM test title skipped for {req_id}::{scenario_type}: {e}")
         return None
 
-
 # ---------------- Main sync ----------------
 
 def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id: Optional[str] = None):
@@ -228,8 +249,9 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
     jira_project = os.environ.get("JIRA_PROJECT", "SCRUM")
     approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
     link_type = os.getenv("JIRA_LINK_TYPE", "Relates")
+    CREATE_LINKS = os.getenv("JIRA_CREATE_LINKS", "1") == "1"  # strict
     project_id = project_id or os.getenv("PROJECT_ID", "primark")
-    IDEMPOTENT_SKIP = os.getenv("JIRA_IDEMPOTENT_SKIP_WITH_HASH", "1") == "1"  # NEW
+    IDEMPOTENT_SKIP = os.getenv("JIRA_IDEMPOTENT_SKIP_WITH_HASH", "1") == "1"
 
     missing = [k for k, v in {
         "JIRA_URL": jira_url,
@@ -239,13 +261,26 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
     if missing:
         raise RuntimeError(f"Missing Jira environment variables: {', '.join(missing)}")
 
+    # Session start log + small state
+    if session_id:
+        _sm_log_action(session_id, "jira_sync_start", {
+            "approved_only": approved_only, "project": jira_project
+        })
+        _sm_update_summary(session_id, f"Starting Jira sync → {jira_project} (approved-only={approved_only}).")
+        _sm_set_state(session_id, "last_jira_project", jira_project)
+
     print(f"🔐 Connecting to Jira project '{jira_project}' as {jira_user}…")
     ja = JiraAgent(jira_url, jira_user, jira_token, jira_project)
 
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
 
-    # ---- Requirements (include description + criteria) ----
+    # Counters
+    created_stories = updated_stories = skipped_stories = 0
+    created_tasks = updated_tasks = skipped_tasks = 0
+    linked_count = 0
+
+    # ---- Requirements ----
     if approved_only:
         c.execute("""
             SELECT rowid, id AS req_id, title,
@@ -273,13 +308,11 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
 
         label = _req_label(req_id)
 
-        # DEFAULT deterministic summary
         default_summary = f"[{req_id}] {title or 'Untitled requirement'}"
-        # Try Memory-aware LLM summary (optional)
         llm_summary = _maybe_llm_summary_for_requirement(conn, project_id, session_id, req_id, title or "", description, criteria)
         summary = llm_summary or default_summary
 
-        # --- NEW: idempotency guard (requirements)
+        # Idempotency guard (requirements)
         req_hash_key = f"jira.hash.req.{req_id}"
         new_hash = _hash_content(title or "", description or "", criteria or "")
         if IDEMPOTENT_SKIP:
@@ -289,6 +322,7 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
             ).fetchone()
             if row and row[0] == new_hash and (jira_key or "").strip():
                 print(f"⏩ Skip unchanged requirement {req_id} (content hash match).")
+                skipped_stories += 1
                 continue
 
         content = [
@@ -313,11 +347,17 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
                 issue_type_name="Story",
                 existing_key=(jira_key or None)
             )
+            if created:
+                created_stories += 1
+            else:
+                updated_stories += 1
             print(f"{'✅ Created' if created else '↻ Updated'} requirement: {key} ({label})")
+
             if not jira_key or jira_key != key:
                 c.execute("UPDATE requirements SET jira_key=? WHERE rowid=?", (key, rid))
                 conn.commit()
-            # NEW: persist hash for idempotency
+
+            # persist hash
             c.execute(
                 "INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES(?,?,?)",
                 (project_id, req_hash_key, new_hash)
@@ -386,17 +426,30 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
         llm_summary = _maybe_llm_summary_for_test(conn, project_id, session_id, req_id, scenario_type)
         summary = llm_summary or default_summary
 
-        # --- NEW: idempotency guard (test cases)
+        # --- NEW: propagate jira_key from older rows if newest is blank
+        if not (jira_key or "").strip():
+            row_prev = c.execute(
+                """
+                SELECT jira_key FROM test_cases
+                WHERE requirement_id=? AND scenario_type=? AND COALESCE(jira_key,'') <> ''
+                ORDER BY rowid DESC LIMIT 1
+                """,
+                (req_id, scenario_type)
+            ).fetchone()
+            if row_prev and row_prev[0]:
+                jira_key = row_prev[0]
+
+        # --- Idempotency guard (test cases)
         tc_hash_key = f"jira.hash.tc.{req_id}:{scenario_type}"
         new_tc_hash = _hash_content(req_id or "", scenario_type or "", gherkin or "")
-        if IDEMPOTENT_SKIP:
-            row = c.execute(
+        if IDEMPOTENT_SKIP and (jira_key or "").strip():
+            row_hash = c.execute(
                 "SELECT value FROM memory_project WHERE project_id=? AND key=?",
                 (project_id, tc_hash_key)
             ).fetchone()
-            if row and row[0] == new_tc_hash and (jira_key or "").strip():
+            if row_hash and row_hash[0] == new_tc_hash:
                 print(f"⏩ Skip unchanged test {req_id}::{scenario_type} (content hash match).")
-                # minimal behavior: skip both upsert & linking to avoid duplicates
+                skipped_tasks += 1
                 continue
 
         content = [
@@ -416,24 +469,35 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
                 summary=summary,
                 description_adf=desc,
                 issue_type_name="Task",
-                existing_key=(jira_key or None)
+                existing_key=(jira_key or None)  # may be propagated
             )
+            if created:
+                created_tasks += 1
+            else:
+                updated_tasks += 1
             print(f"{'✅ Created' if created else '↻ Updated'} test: {key} ({label})")
+
+            # ensure current latest row has the key (whether created or updated)
             if not jira_key or jira_key != key:
                 c.execute("UPDATE test_cases SET jira_key=? WHERE rowid=?", (key, tid))
                 conn.commit()
+
             # Link to parent Story if we have a parent key (or can find one in parent_map)
-            parent = parent_key or parent_map.get(req_id, "")
+            parent = (parent_key or parent_map.get(req_id, "")).strip()
             if parent:
-                try:
-                    ja.link_issues(inward_key=parent, outward_key=key, link_type=link_type)
-                    print(f"🔗 Linked test {key} to story {parent} via '{link_type}'.")
-                except requests.HTTPError as e:
-                    print(f"ℹ️ Linking skipped for test {key} → story {parent}: {e}")
+                if CREATE_LINKS:
+                    try:
+                        ja.link_issues(inward_key=parent, outward_key=key, link_type=link_type)
+                        linked_count += 1
+                        print(f"🔗 Linked test {key} to story {parent} via '{link_type}'.")
+                    except requests.HTTPError as e:
+                        print(f"ℹ️ Linking skipped for test {key} → story {parent}: {e}")
+                else:
+                    print("ℹ️ Skipping issue link creation (JIRA_CREATE_LINKS!=1).")
             else:
                 print(f"ℹ️ No parent Jira key found for requirement {req_id}; link skipped.")
 
-            # NEW: persist test hash for idempotency
+            # persist hash for idempotency
             c.execute(
                 "INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES(?,?,?)",
                 (project_id, tc_hash_key, new_tc_hash)
@@ -445,3 +509,31 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
 
     conn.close()
     print("✅ Jira sync complete.")
+
+    # Final session logs/summary
+    if session_id:
+        total_req = created_stories + updated_stories
+        total_tc = created_tasks + updated_tasks
+        _sm_log_action(session_id, "jira_sync_done", {
+            "created_stories": created_stories,
+            "updated_stories": updated_stories,
+            "skipped_stories": skipped_stories,
+            "created_tasks": created_tasks,
+            "updated_tasks": updated_tasks,
+            "skipped_tasks": skipped_tasks,
+            "links_created": linked_count,
+            "project": jira_project,
+        })
+        parts = []
+        if total_req:
+            parts.append(f"{total_req} stories ({created_stories} new, {updated_stories} upd)")
+        if skipped_stories:
+            parts.append(f"{skipped_stories} stories skipped")
+        if total_tc:
+            parts.append(f"{total_tc} tests ({created_tasks} new, {updated_tasks} upd)")
+        if skipped_tasks:
+            parts.append(f"{skipped_tasks} tests skipped")
+        if linked_count:
+            parts.append(f"{linked_count} links")
+        summary_line = "Jira sync: " + (", ".join(parts) if parts else "no changes")
+        _sm_update_summary(session_id, summary_line)

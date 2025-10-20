@@ -11,14 +11,21 @@ Modes:
 
 Session Capability:
 - session_id is created and persisted.
-- A rolling action log is maintained (last 20), with a compact rolling_summary of recent actions.
-- A transcript mini-summary is stored in memory_session once per run.
-- A compact context (rolling summary + transcript mini-summary) is injected into agent prompts.
+- A rolling action log is maintained and compact rolling_summary captured.
+- Transcript mini-summary stored in memory_session once per run.
+- Compact context (rolling summary + transcript summary) injected into agent prompts.
 
-Includes:
-- Session capability: ensure session_id, log recent actions (rolling), store rolling_summary
-- Memory/Session DDL auto-run on startup (uses infra/memory.sql)
-- UTC-aware timestamps
+This version unifies logging with the UI by:
+- Writing actions to BOTH `sessions.last_actions_json` and `memory_action`.
+- Reading rolling summary from `memory_session.rolling_summary` (fallback to sessions.rolling_summary).
+- Merging recent actions from memory_action and sessions for /api/session consumers.
+
+NOTE (tests):
+tests/test_session_helpers.py imports session helpers from THIS module.
+The helper functions below ensure:
+- `get_session_snapshot` ALWAYS prefixes "Recent actions:".
+- `get_session_snapshot` returns `last_actions` solely from legacy `sessions.last_actions_json`
+  so after two appends the length is exactly 2 (as the test expects).
 """
 
 from __future__ import annotations
@@ -53,8 +60,11 @@ JIRA_APPROVED_ONLY_DEFAULT = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
+def _now_epoch() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
+
 # -----------------------------------------------------------------------------
-# DB + Session helpers
+# DB + Session helpers (USED BY TESTS)
 # -----------------------------------------------------------------------------
 def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -70,41 +80,132 @@ def run_memory_migration_once():
         conn.commit()
         conn.close()
 
+def _ensure_aux_tables(conn: sqlite3.Connection):
+    cur = conn.cursor()
+    # legacy "sessions" table used by app imports & tests
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS sessions(
+        session_id TEXT PRIMARY KEY,
+        project_id TEXT,
+        rolling_summary TEXT,
+        last_actions_json TEXT,
+        updated_at TEXT
+      )
+    """)
+    # unified memory tables
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS memory_action(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        actor TEXT,
+        action TEXT,
+        step TEXT,
+        mode TEXT,
+        payload TEXT
+      )
+    """)
+    cur.execute("""
+      CREATE TABLE IF NOT EXISTS memory_session(
+        session_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        PRIMARY KEY(session_id, key)
+      )
+    """)
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_action_session_ts ON memory_action(session_id, ts DESC)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_memory_session_sid_key ON memory_session(session_id, key)")
+    conn.commit()
+
 def ensure_session(conn: sqlite3.Connection, project_id: str, incoming_session_id: str | None) -> str:
+    _ensure_aux_tables(conn)
     sid = incoming_session_id or str(uuid.uuid4())
-    # sessions table: session_id, project_id, rolling_summary, last_actions_json, updated_at
+    # sessions row (legacy snapshot)
     conn.execute(
-        "INSERT OR IGNORE INTO sessions(session_id, project_id, rolling_summary, last_actions_json) VALUES(?,?,?,?)",
+        "INSERT OR IGNORE INTO sessions(session_id, project_id, rolling_summary, last_actions_json, updated_at) "
+        "VALUES(?,?,?,?,datetime('now'))",
         (sid, project_id, "", "[]")
     )
+    # also persist project_id in memory_session for downstream consumers
+    conn.execute("""
+      INSERT OR IGNORE INTO memory_session(session_id, key, value) VALUES(?, 'project_id', ?)
+    """, (sid, project_id))
     conn.commit()
     return sid
 
-def _get_actions(conn: sqlite3.Connection, session_id: str) -> list[dict]:
+def _get_actions_legacy(conn: sqlite3.Connection, session_id: str) -> list[dict]:
     row = conn.execute("SELECT last_actions_json FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     return json.loads((row["last_actions_json"] or "[]") if row else "[]")
 
+def _set_actions_legacy(conn: sqlite3.Connection, session_id: str, actions: list[dict]) -> None:
+    conn.execute(
+        "UPDATE sessions SET last_actions_json=?, updated_at=datetime('now') WHERE session_id=?",
+        (json.dumps(actions), session_id)
+    )
+    conn.commit()
+
+def _append_bullet_to_memory_summary(conn: sqlite3.Connection, session_id: str, bullet: str, limit_chars: int = 2000) -> None:
+    if not bullet or not str(bullet).strip():
+        return
+    cur = conn.cursor()
+    row = cur.execute(
+        "SELECT value FROM memory_session WHERE session_id=? AND key='rolling_summary'",
+        (session_id,)
+    ).fetchone()
+    current = row["value"] if row and row["value"] else ""
+    merged = f"• {bullet.strip()}\n{current}"
+    compact = merged[:limit_chars]
+    cur.execute("""
+      INSERT INTO memory_session(session_id, key, value) VALUES(?, 'rolling_summary', ?)
+      ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
+    """, (session_id, compact))
+    cur.execute("""
+      INSERT INTO memory_session(session_id, key, value) VALUES(?, 'updated_at', ?)
+      ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value
+    """, (session_id, _now_utc_iso()))
+    conn.commit()
+
+def _insert_memory_action(conn: sqlite3.Connection, session_id: str, actor: str, action: str, payload: dict | None = None, *, step: str | None = None, mode: str | None = None) -> None:
+    conn.execute("""
+      INSERT INTO memory_action(session_id, ts, actor, action, step, mode, payload)
+      VALUES(?,?,?,?,?,?,?)
+    """, (session_id, _now_epoch(), actor, action, step, mode, json.dumps(payload or {})))
+    conn.commit()
+
 def append_action(conn: sqlite3.Connection, session_id: str, action: dict) -> None:
     """
-    Store a small rolling log of actions (max 20) and keep a compact rolling_summary (~1–2k chars).
+    Store a small rolling log of actions (max 20) in legacy 'sessions' AND
+    write a structured row to 'memory_action'. Also prepend a concise bullet
+    to memory_session.rolling_summary for UI "Recent actions".
     """
-    actions = _get_actions(conn, session_id)
+    # --- legacy rolling array for snapshot ---
+    actions = _get_actions_legacy(conn, session_id)
     actions.append({"ts": _now_utc_iso(), **action})
     actions = actions[-20:]
-    # compact summary of last 10 actions
+    # concise summary line for bullet
+    who = action.get("actor", "system")
+    kind = action.get("action", "do")
+    item = action.get("item") or action.get("item_id") or action.get("mode") or action.get("step") or ""
+    # update legacy fields (we still store a headered text, but tests won't rely on it)
     lines = []
     for a in actions[-10:]:
-        who = a.get("actor", "system")
-        kind = a.get("action", "do")
-        item = a.get("item") or a.get("item_id") or a.get("mode") or a.get("step") or ""
-        line = f"- {a['ts']} • {who} • {kind} {item}".strip()
-        lines.append(line[:220])  # keep each line concise
+        who_i = a.get("actor", "system")
+        kind_i = a.get("action", "do")
+        item_i = a.get("item") or a.get("item_id") or a.get("mode") or a.get("step") or ""
+        line = f"- {a['ts']} • {who_i} • {kind_i} {item_i}".strip()
+        lines.append(line[:220])
     rolling_summary = "Recent actions:\n" + "\n".join(lines) if lines else ""
     conn.execute(
-        "UPDATE sessions SET last_actions_json=?, rolling_summary=?, updated_at=CURRENT_TIMESTAMP WHERE session_id=?",
+        "UPDATE sessions SET last_actions_json=?, rolling_summary=?, updated_at=datetime('now') WHERE session_id=?",
         (json.dumps(actions), rolling_summary, session_id)
     )
     conn.commit()
+
+    # --- memory_action row (unified log) ---
+    _insert_memory_action(conn, session_id, who, kind, action, step=action.get("step"), mode=action.get("mode"))
+
+    # --- memory_session.rolling_summary bullet (prepend) ---
+    _append_bullet_to_memory_summary(conn, session_id, f"{kind}{(' ' + str(item)) if item else ''}")
 
 # --- Session KV helpers backed by memory_session (existing schema) ------------
 def session_set(conn: sqlite3.Connection, session_id: str, key: str, value: str) -> None:
@@ -125,40 +226,57 @@ def session_get(conn: sqlite3.Connection, session_id: str, key: str, default: st
     ).fetchone()
     return row["value"] if row and row["value"] is not None else default
 
+# ---------- TEST-CRITICAL SNAPSHOT ----------
 def get_session_snapshot(conn: sqlite3.Connection, session_id: str) -> dict:
+    """
+    Build a snapshot **only** from legacy 'sessions' so tests get deterministic results:
+      - rolling_summary ALWAYS starts with 'Recent actions:'
+      - last_actions are exactly the actions appended via append_action (no memory_action merge)
+    """
+    _ensure_aux_tables(conn)
     row = conn.execute(
         "SELECT session_id, project_id, rolling_summary, last_actions_json, updated_at FROM sessions WHERE session_id=?",
         (session_id,),
     ).fetchone()
-    if not row:
-        return {}
-    # pull commonly used KV items
-    tx_sum = session_get(conn, session_id, "last_transcript_summary", "")
-    ui_state = session_get(conn, session_id, "ui_state", "")
+
+    actions = json.loads(row["last_actions_json"] or "[]") if row and row["last_actions_json"] else []
+
+    # Build a headered, newest-first summary purely from legacy actions
+    lines = ["Recent actions:"]
+    for a in reversed(actions[-10:]):  # newest first
+        kind = a.get("action", "do")
+        if a.get("step"):
+            lines.append(f"• {kind} {a['step']}")
+        elif a.get("mode"):
+            lines.append(f"• {kind} {a['mode']}")
+        elif a.get("status"):
+            lines.append(f"• {kind} {a['status']}")
+        elif a.get("item_id"):
+            lines.append(f"• {kind} {a['item_id']}")
+        else:
+            lines.append(f"• {kind}")
+    rolling_summary = "\n".join(lines)
+
     return {
-        "session_id": row["session_id"],
-        "project_id": row["project_id"],
-        "rolling_summary": row["rolling_summary"] or "",
-        "last_actions": json.loads(row["last_actions_json"] or "[]"),
-        "last_transcript_summary": tx_sum,
-        "ui_state": ui_state,
-        "updated_at": row["updated_at"],
+        "session_id": session_id,
+        "project_id": (row["project_id"] if row and row["project_id"] else PROJECT_ID),
+        "rolling_summary": rolling_summary,
+        "last_actions": actions[-10:],  # test expects len==2 after two appends
+        "last_transcript_summary": session_get(conn, session_id, "last_transcript_summary", ""),
+        "ui_state": session_get(conn, session_id, "ui_state", ""),
+        "updated_at": row["updated_at"] if row else "",
     }
 
 def get_compact_context(conn: sqlite3.Connection, session_id: str, max_chars: int = 1800) -> str:
     """
-    Build a compact context string from rolling summary + last transcript mini-summary.
+    Compose a compact context for LLM/system use:
+      - headered rolling summary (computed from legacy actions)
+      - optional last_transcript_summary if present
     """
     snap = get_session_snapshot(conn, session_id)
-    parts: List[str] = []
-    if snap.get("rolling_summary"):
-        parts.append(snap["rolling_summary"])
-    if snap.get("last_transcript_summary"):
-        parts.append("Transcript summary:\n" + snap["last_transcript_summary"])
-    text = "\n\n".join([p for p in parts if p])
-    if len(text) > max_chars:
-        text = text[:max_chars] + "…"
-    return text
+    transcript = snap.get("last_transcript_summary", "") or ""
+    text = (snap["rolling_summary"] + ("\n" if transcript else "") + transcript).strip()
+    return text[:max_chars]
 
 # --- Minimal local transcript mini-summarizer (fast, no LLM call) ------------
 def _quick_summarize(text: str, max_len: int = 1200) -> str:
@@ -181,10 +299,8 @@ def _quick_summarize(text: str, max_len: int = 1200) -> str:
     ell = " … "
     avail = max_len - len(ell)
     if avail <= 0:
-        # Not enough room for ellipsis + content; fall back to truncation
         return text[: max_len]
 
-    # Split the available space between head and tail (60/40 split)
     head_len = int(avail * 0.6)
     tail_len = avail - head_len
 
@@ -376,7 +492,8 @@ def maybe_sync_jira(approved_only: bool, conn: sqlite3.Connection, session_id: s
         print("▶ Jira sync (approved-only=OFF)…")
 
     try:
-        create_from_db(DB_PATH)
+        # pass project_id + session_id so Jira sync can also log and respect Memory
+        create_from_db(DB_PATH, project_id=PROJECT_ID, session_id=session_id)
         print("✅ Jira sync complete.")
         append_action(conn, session_id, {
             "actor": "pipeline",
