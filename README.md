@@ -1,166 +1,98 @@
-🤖 Synapse — GenAI Requirements & BDD Generator (Agentic Framework)
+Synapse — GenAI Requirements & BDD Generator (Agentic Framework)
 
-🧠 Microsoft Teams Transcript → Structured Requirements + Test Cases → Review → Jira Sync
+Microsoft Teams transcript → structured requirements → BDD test cases → review UI → Jira sync
 
+Overview
+Synapse is an agentic AI proof-of-concept that converts real meeting transcripts (.vtt/.txt) into Jira-ready requirements and BDD tests. It uses a modular multi-agent pipeline, a lightweight memory layer for continuity, a Flask UI for human approval, and an idempotent Jira sync.
 
-Synapse is an agentic AI proof-of-concept that automates requirement and test case generation from real meeting transcripts.
-It demonstrates how GenAI can integrate across Agile delivery stages — from transcript ingestion to Jira synchronization — using modular multi-agent orchestration.
+End-to-End Flow
+1) IngestAgent        – Read transcript (.vtt/.txt)
+2) RequirementAgent   – Extract 3–6 testable business requirements
+3) ReviewAgent        – Validate/dedupe/classify
+4) TestAgent          – Generate 3 BDD/Gherkin scenarios per requirement
+5) PersistAgent       – Save to SQLite (repo.db) + JSON
+6) Review UI (Flask)  – Approve + one-click sync to Jira
+7) JiraAgent          – Idempotent sync (Stories + linked Tasks)
 
-🌐 End-to-End Flow
-Stage	Agent	Description
-1️⃣	IngestAgent	Reads .vtt meeting transcript from Teams or OneDrive
-2️⃣	RequirementAgent	Extracts 3–6 structured business requirements
-3️⃣	ReviewAgent	Validates, deduplicates, and classifies requirements
-4️⃣	TestAgent	Generates 3 BDD / Gherkin test cases per requirement
-5️⃣	PersistAgent	Writes results to SQLite (repo.db) and JSON
-6️⃣	Flask UI (app/)	Human approval and one-click Jira sync
-7️⃣	JiraAgent	Idempotently syncs approved requirements and tests to Jira
-🧱 Architecture (Agentic Controller)
-flowchart TD
-    A[Transcript .vtt/.txt] --> B[IngestAgent]
-    B --> C[RequirementAgent]
-    C --> D[ReviewAgent]
-    D --> E[TestAgent]
-    E --> F[PersistAgent]
-    F --> G[(repo.db)]
-    F --> H[output.json]
-    G --> I[Flask UI - app/app.py<br>Approve + Sync]
-    I --> J[Jira Cloud (idempotent sync)]
-    F --> K[export_csv.py<br>CSV export]
-    J --> L[Analytics & Reporting]
+Quick Start
+1) Environment
+   Create a .env in repo root (do not commit):
+     OPENAI_API_KEY=sk-your-key
+     OPENAI_MODEL=gpt-4o
+     OPENAI_TEMPERATURE=0.2
 
-🔧 Setup
-1. Environment
+     # Jira (Cloud)
+     JIRA_URL=https://yourcompany.atlassian.net
+     JIRA_USER=you@example.com
+     JIRA_API_TOKEN=your-jira-token
+     JIRA_PROJECT=SCRUM
 
-Create .env in project root:
+     # Behavior
+     PROJECT_ID=primark
+     PIPELINE_MODE=agentic
+     JIRA_SYNC_ON_PIPELINE=1
+     JIRA_APPROVED_ONLY=1
+     JIRA_CREATE_LINKS=1
 
-OPENAI_API_KEY=sk-your-key
-OPENAI_MODEL=gpt-4o
-OPENAI_TEMPERATURE=0.2
+2) Install
+   pip install -r requirements.txt
 
-# Jira
-JIRA_URL=https://yourcompany.atlassian.net
-JIRA_USER=you@example.com
-JIRA_API_TOKEN=your-jira-token
-JIRA_PROJECT=SCRUM
+3) Run the agentic pipeline
+   python run_pipeline.py --mode agentic --transcript meeting_transcript.vtt
+   Outputs: output.json, repo.db
+   Console shows counts (requirements/tests) and Jira sync status.
 
-# Behaviour
-PIPELINE_MODE=agentic
-JIRA_SYNC_ON_PIPELINE=1
-JIRA_APPROVED_ONLY=1
+4) Launch the Review UI
+   python -m app.app
+   Open http://127.0.0.1:5000/
+   • Approve requirements
+   • Click “Sync to Jira”
+   • See effective memory (tone/prefix) and recent actions
 
+Memory & Session (SQLite)
+- memory_project: project-level settings (tone, jira prefixes, guard hashes)
+- memory_session: session context (rolling summary, last transcript summary)
+- memory_action: structured action log (for recent actions UI)
+- sessions: legacy snapshot (rolling summary + last_actions_json mirror)
 
-⚠️ Never commit .env — it’s excluded via .gitignore.
-
-2. Install dependencies
-pip install -r requirements.txt
-
-3. Run full Agentic pipeline
-python run_pipeline.py --mode agentic
-
-
-Output:
-
-🧩 Requirements: 4
-✅ Test cases: 12
-✅ Jira sync complete.
-📦 outputs: output.json , repo.db
-
-4. Launch the Review UI
-python -m app.app
-
-
-Then open http://127.0.0.1:5000/
-
-✅ Approve requirements
-✅ Sync approved items directly to Jira
-✅ View effective project/session memory (tone, prefix, etc.)
-
-🧠 Memory & Session Awareness
-
-Synapse uses a lightweight memory store in SQLite:
-
-Table	Purpose
-memory_project	Project-level configuration (e.g., Jira prefixes, tone)
-memory_session	Session-specific overrides
-sessions	Execution trace for orchestration context
-
-Example seeding:
-
-INSERT OR REPLACE INTO memory_project(project_id,key,value)
-VALUES
+Example seed (optional):
+INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES
  ('primark','tone','Concise, British English'),
  ('primark','jira.story_prefix','PK');
 
-📊 Example Output
+Idempotency & Jira
+- Requirements/Tests carry content hashes (memory_project) to skip unchanged updates.
+- Tests also reuse the last known jira_key for (requirement_id, scenario_type) to update the same Task across runs, even if JQL search is restricted.
+- Set JIRA_CREATE_LINKS=1 to link Tasks ↔ Stories (Relates).
 
-Console
+Repository Layout
+agents/
+  agentic_controller.py  ingest_agent.py  requirements_agent.py
+  review_agent.py        tests_agent.py   persist_agent.py  jira_agent.py
+app/
+  app.py + templates/ (Review UI)
+infra/memory.py          schemas.py
+run_pipeline.py          export_csv.py
+repo.db (generated)      output/ (CSVs)
+requirements.txt
 
-🚀 E2E DONE
-🧩 requirements: 4
-✅ test cases:    12
-📦 outputs:       output.json , repo.db
-🧭 project_id:    primark
-🧾 session_id:    91b3e6aa...
+Common Commands
+# Full run (agentic)
+python run_pipeline.py --mode agentic --transcript meeting_transcript.vtt
 
+# Run without Jira
+JIRA_SYNC_ON_PIPELINE=0 python run_pipeline.py --mode agentic --transcript meeting_transcript.vtt
 
-Jira Cloud
+# Start UI
+python -m app.app
 
-Stories: PK-101, PK-102
+What You Get
+- Multi-agent orchestration (deterministic prompts)
+- Persistent project/session memory and action history
+- Human-in-the-loop approval UI
+- Idempotent Jira integration (Stories + BDD Tasks + optional links)
+- JSON/CSV/SQLite outputs ready for analytics
 
-Linked Test Tasks: PK-103–PK-108 via Relates links
-
-🧩 Repository Layout
-.
-├── agents/
-│   ├── agentic_controller.py     # Multi-agent orchestrator
-│   ├── ingest_agent.py           # Transcript ingestion
-│   ├── requirements_agent.py     # Requirement extraction
-│   ├── review_agent.py           # Review & dedupe logic
-│   ├── tests_agent.py            # BDD generation
-│   ├── persist_agent.py          # DB persistence
-│   └── jira_agent.py             # Jira sync (ADF idempotent)
-│
-├── app/
-│   ├── app.py                    # Flask web UI
-│   └── templates/
-│
-├── infra/memory.py               # Memory hydrator and trace store
-├── schemas.py                    # Data validation helpers
-├── run_pipeline.py               # E2E orchestrator
-├── export_csv.py                 # CSV export
-├── repo.db                       # SQLite store
-├── output/                       # Generated CSVs
-└── requirements.txt
-
-🚀 Current Capabilities (v3)
-
-✅ Full Agentic orchestration
-
-✅ Persistent memory (project + session)
-
-✅ Flask UI for review and Jira sync
-
-✅ Deterministic, idempotent Jira integration
-
-✅ Robust JSON recovery & chunking logic
-
-✅ CSV + SQLite persistence
-
-✅ Modular agent framework ready for enterprise scaling
-
-🔮 Next Milestone (v4)
-
-🧠 Chain-of-Thought traces + self-checks per agent
-
-📈 Metrics dashboard in UI
-
-☁️ Azure App Service / ACR container deployment
-
-📂 OneDrive ingestion for auto transcript detection
-
-🧭 Vision
-
-Synapse illustrates how GenAI can act as an intelligent assistant for delivery teams —
-converting raw conversation into structured, testable, and traceable artifacts
-directly integrated with enterprise tools like Jira and Azure DevOps.
+Notes
+- Ensure your Jira token/user can Browse, Create, Edit, and Link in the target project.
+- Keep .env out of source control.
