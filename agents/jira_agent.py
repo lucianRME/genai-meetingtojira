@@ -250,7 +250,7 @@ def create_from_db(db_path: str, *, project_id: Optional[str] = None, session_id
     approved_only = os.getenv("JIRA_APPROVED_ONLY", "1") == "1"
     link_type = os.getenv("JIRA_LINK_TYPE", "Relates")
     CREATE_LINKS = os.getenv("JIRA_CREATE_LINKS", "1") == "1"  # strict
-    project_id = project_id or os.getenv("PROJECT_ID", "primark")
+    project_id = project_id or os.getenv("PROJECT_ID", "myproject")
     IDEMPOTENT_SKIP = os.getenv("JIRA_IDEMPOTENT_SKIP_WITH_HASH", "1") == "1"
 
     missing = [k for k, v in {

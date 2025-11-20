@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 def _env_isolation(monkeypatch, tmp_path):
     db = tmp_path / "repo.db"
     monkeypatch.setenv("REPO_DB_PATH", str(db))
-    monkeypatch.setenv("PROJECT_ID", "primark")
+    monkeypatch.setenv("PROJECT_ID", "myproject")
     monkeypatch.setenv("OPENAI_API_KEY", "dummy")      # will be stubbed
     monkeypatch.setenv("JIRA_INTEGRATION", "0")        # never hit Jira in tests
     monkeypatch.setenv("SMALLTALK_FILTER", "1")

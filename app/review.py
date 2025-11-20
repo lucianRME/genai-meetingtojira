@@ -13,7 +13,7 @@ from generate_req_bdd import ensure_schema  # NEW
 bp = Blueprint("review", __name__, url_prefix="/review", template_folder="templates")
 
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
-PROJECT_ID = os.getenv("PROJECT_ID", "primark")
+PROJECT_ID = os.getenv("PROJECT_ID", "myproject")
 
 # Ensure tables/columns exist up-front so fresh DBs work
 ensure_schema()  # NEW

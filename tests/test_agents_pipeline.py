@@ -8,7 +8,7 @@ from agents.persist_agent import PersistAgent
 
 def test_agentic_flow_stubbed_llm(sample_vtt, db_conn, stub_chat):
     state = {"transcript_path": sample_vtt, "conn": db_conn, "db": db_conn,
-             "project_id":"primark", "session_id":"test-session"}
+             "project_id":"myproject", "session_id":"test-session"}
     flow = Controller([IngestAgent(), RequirementAgent(), ReviewAgent(), TestAgent(), PersistAgent()])
     res = flow.run(state)
     assert res.get("requirements")

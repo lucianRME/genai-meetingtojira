@@ -28,7 +28,7 @@ Quick Start
      JIRA_PROJECT=SCRUM
 
      # Behavior
-     PROJECT_ID=primark
+     PROJECT_ID=myproject
      PIPELINE_MODE=agentic
      JIRA_SYNC_ON_PIPELINE=1
      JIRA_APPROVED_ONLY=1
@@ -57,8 +57,8 @@ Memory & Session (SQLite)
 
 Example seed (optional):
 INSERT OR REPLACE INTO memory_project(project_id,key,value) VALUES
- ('primark','tone','Concise, British English'),
- ('primark','jira.story_prefix','PK');
+ ('myproject','tone','Concise, British English'),
+ ('myproject','jira.story_prefix','PK');
 
 Idempotency & Jira
 - Requirements/Tests carry content hashes (memory_project) to skip unchanged updates.

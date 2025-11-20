@@ -48,7 +48,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 DEFAULT_MODE = os.getenv("PIPELINE_MODE", "agentic").lower()  # agentic | classic
 TRANSCRIPT_FILE = os.getenv("TRANSCRIPT_FILE")  # optional override via env
 DB_PATH = os.getenv("REPO_DB_PATH", "repo.db")
-PROJECT_ID = os.getenv("PROJECT_ID", "primark")
+PROJECT_ID = os.getenv("PROJECT_ID", "myproject")
 
 # Jira sync flags
 JIRA_SYNC_ON_PIPELINE_DEFAULT = os.getenv("JIRA_SYNC_ON_PIPELINE", "1") == "1"

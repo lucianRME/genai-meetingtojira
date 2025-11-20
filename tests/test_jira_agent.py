@@ -32,6 +32,6 @@ def test_jira_sync_idempotent(tmp_path, monkeypatch):
         m.post("https://example.atlassian.net/rest/api/3/search", json={"issues":[]})
         m.post("https://example.atlassian.net/rest/api/3/issue", json={"key":"SCRUM-1"})
         m.put(requests_mock.ANY, status_code=204)
-        create_from_db(str(db), project_id="primark", session_id="sid-1")
+        create_from_db(str(db), project_id="myproject", session_id="sid-1")
         # second run should detect hash and skip creating/updating (idempotent)
-        create_from_db(str(db), project_id="primark", session_id="sid-1")
+        create_from_db(str(db), project_id="myproject", session_id="sid-1")
